@@ -6,10 +6,15 @@ import torch
 import warnings
 import numpy as np
 import pandas as pd
+import bisect
 from qlib.utils.data import guess_horizon
 from qlib.utils import init_instance_by_config
-
-from qlib.data.dataset import DatasetH
+from copy import deepcopy
+from scipy.stats import spearmanr
+from typing import Callable, Union, List, Tuple, Dict, Text, Optional
+from qlib.data.dataset import DatasetH, TSDatasetH, TSDataSampler
+from qlib.data.dataset.handler import DataHandler, DataHandlerLP
+from qlib.contrib.data.handler import check_transform_proc
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -361,3 +366,389 @@ class MTSDatasetH(DatasetH):
             }
 
         # end indice loop
+
+
+###################################################################################
+# lqa: for MASTER
+# class marketDataHandler(DataHandlerLP):
+#     """Market Data Handler for MASTER (see `examples/benchmarks/MASTER`)
+#
+#     Args:
+#         instruments (str): instrument list
+#         start_time (str): start time
+#         end_time (str): end time
+#         freq (str): data frequency
+#         infer_processors (list): inference processors
+#         learn_processors (list): learning processors
+#         fit_start_time (str): fit start time
+#         fit_end_time (str): fit end time
+#         process_type (str): process type
+#         filter_pipe (list): filter pipe
+#         inst_processors (list): instrument processors
+#     """
+#
+#     def __init__(
+#             self,
+#             instruments="csi300",
+#             start_time=None,
+#             end_time=None,
+#             freq="day",
+#             infer_processors=[],
+#             learn_processors=[],
+#             fit_start_time=None,
+#             fit_end_time=None,
+#             process_type=DataHandlerLP.PTYPE_A,
+#             filter_pipe=None,
+#             inst_processors=None,
+#             **kwargs
+#     ):
+#         infer_processors = check_transform_proc(infer_processors, fit_start_time, fit_end_time)
+#         learn_processors = check_transform_proc(learn_processors, fit_start_time, fit_end_time)
+#
+#         data_loader = {
+#             "class": "QlibDataLoader",
+#             "kwargs": {
+#                 "config": {
+#                     "feature": self.get_feature_config(),
+#                 },
+#                 "filter_pipe": filter_pipe,
+#                 "freq": freq,
+#                 "inst_processors": inst_processors,
+#             },
+#         }
+#         super().__init__(
+#             instruments=instruments,
+#             start_time=start_time,
+#             end_time=end_time,
+#             data_loader=data_loader,
+#             infer_processors=infer_processors,
+#             learn_processors=learn_processors,
+#             process_type=process_type,
+#             **kwargs
+#         )
+#
+#     @staticmethod
+#     def get_feature_config():
+#         """
+#         Get market feature (63-dimensional), which are csi100 index, csi300 index, csi500 index.
+#         The first list is the name to be shown for the feature, and the second list is the feature to fecth.
+#         """
+#         return (
+#             ['Mask($close/Ref($close,1)-1, "MARKET")', 'Mask(Mean($close/Ref($close,1)-1,5), "MARKET")',
+#              'Mask(Std($close/Ref($close,1)-1,5), "MARKET")', 'Mask(Mean($volume,5)/$volume, "MARKET")',
+#              'Mask(Std($volume,5)/$volume, "MARKET")', 'Mask(Mean($close/Ref($close,1)-1,10), "MARKET")',
+#              'Mask(Std($close/Ref($close,1)-1,10), "MARKET")', 'Mask(Mean($volume,10)/$volume, "MARKET")',
+#              'Mask(Std($volume,10)/$volume, "MARKET")', 'Mask(Mean($close/Ref($close,1)-1,20), "MARKET")',
+#              'Mask(Std($close/Ref($close,1)-1,20), "MARKET")', 'Mask(Mean($volume,20)/$volume, "MARKET")',
+#              'Mask(Std($volume,20)/$volume, "MARKET")', 'Mask(Mean($close/Ref($close,1)-1,30), "MARKET")',
+#              'Mask(Std($close/Ref($close,1)-1,30), "MARKET")', 'Mask(Mean($volume,30)/$volume, "MARKET")',
+#              'Mask(Std($volume,30)/$volume, "MARKET")', 'Mask(Mean($close/Ref($close,1)-1,60), "MARKET")',
+#              'Mask(Std($close/Ref($close,1)-1,60), "MARKET")', 'Mask(Mean($volume,60)/$volume, "MARKET")',
+#              'Mask(Std($volume,60)/$volume, "MARKET")'],
+#             ['Mask($close/Ref($close,1)-1, "MARKET")', 'Mask(Mean($close/Ref($close,1)-1,5), "MARKET")',
+#              'Mask(Std($close/Ref($close,1)-1,5), "MARKET")', 'Mask(Mean($volume,5)/$volume, "MARKET")',
+#              'Mask(Std($volume,5)/$volume, "MARKET")', 'Mask(Mean($close/Ref($close,1)-1,10), "MARKET")',
+#              'Mask(Std($close/Ref($close,1)-1,10), "MARKET")', 'Mask(Mean($volume,10)/$volume, "MARKET")',
+#              'Mask(Std($volume,10)/$volume, "MARKET")', 'Mask(Mean($close/Ref($close,1)-1,20), "MARKET")',
+#              'Mask(Std($close/Ref($close,1)-1,20), "MARKET")', 'Mask(Mean($volume,20)/$volume, "MARKET")',
+#              'Mask(Std($volume,20)/$volume, "MARKET")', 'Mask(Mean($close/Ref($close,1)-1,30), "MARKET")',
+#              'Mask(Std($close/Ref($close,1)-1,30), "MARKET")', 'Mask(Mean($volume,30)/$volume, "MARKET")',
+#              'Mask(Std($volume,30)/$volume, "MARKET")', 'Mask(Mean($close/Ref($close,1)-1,60), "MARKET")',
+#              'Mask(Std($close/Ref($close,1)-1,60), "MARKET")', 'Mask(Mean($volume,60)/$volume, "MARKET")',
+#              'Mask(Std($volume,60)/$volume, "MARKET")']
+#         )
+class marketDataHandler(DataHandlerLP):
+    def __init__(
+            self,
+            instruments="csi300",
+            start_time=None,
+            end_time=None,
+            freq="1min",  # 默认1分钟
+            infer_processors=[],
+            learn_processors=[],
+            fit_start_time=None,
+            fit_end_time=None,
+            process_type=DataHandlerLP.PTYPE_A,
+            filter_pipe=None,
+            inst_processors=None,
+            **kwargs
+    ):
+        self.freq = freq  # 保存频率，供get_feature_config使用
+
+        infer_processors = check_transform_proc(infer_processors, fit_start_time, fit_end_time)
+        learn_processors = check_transform_proc(learn_processors, fit_start_time, fit_end_time)
+
+        data_loader = {
+            "class": "QlibDataLoader",
+            "kwargs": {
+                "config": {
+                    "feature": self.get_feature_config(),
+                },
+                "filter_pipe": filter_pipe,
+                "freq": freq,
+                "inst_processors": inst_processors,
+            },
+        }
+        super().__init__(
+            instruments=instruments,
+            start_time=start_time,
+            end_time=end_time,
+            data_loader=data_loader,
+            infer_processors=infer_processors,
+            learn_processors=learn_processors,
+            process_type=process_type,
+            **kwargs
+        )
+
+    def get_feature_config(self):
+        """
+        根据freq动态生成特征表达式
+        """
+
+        # 定义时间单位到分钟的换算（默认1min对应1）
+        freq_map = {
+            "1min": 1,
+            "5min": 5,
+            "15min": 15,
+            "30min": 30,
+            "60min": 60,
+            "day": 1440,
+            "week": 10080,
+            "month": 43200,
+        }
+
+        # 获取单位分钟数（默认1）
+        unit_min = freq_map.get(self.freq, 1)
+
+        # 定义窗口长度（天为单位）
+        windows_day = [1, 5, 10, 20, 30, 60]
+
+        # 换算窗口长度为对应频率的步数（举例1小时=60分钟）
+        windows_steps = [int(day * 1440 / unit_min) for day in windows_day]
+
+        feature_names = []
+        feature_exprs = []
+
+        # 计算收益率时，用offset为1个freq单位（即前一个bar）
+        ref_offset = 1
+
+        # 基础收益率特征（前一个bar的收益率）
+
+        for w in windows_steps:
+            feature_names.append(f'Mask($close/Ref($close,{w})-1, "MARKET")')
+            feature_names.append(f'Mask(Mean($close/Ref($close,{w})-1,{w}), "MARKET")')
+            feature_names.append(f'Mask(Std($close/Ref($close,{w})-1,{w}), "MARKET")')
+            feature_names.append(f'Mask(Mean($volume,{w})/$volume, "MARKET")')
+            feature_names.append(f'Mask(Std($volume,{w})/$volume, "MARKET")')
+
+            feature_exprs.append(f'Mask($close/Ref($close,{w})-1, "MARKET")')
+            feature_exprs.append(f'Mask(Mean($close/Ref($close,{w})-1,{w}), "MARKET")')
+            feature_exprs.append(f'Mask(Std($close/Ref($close,{w})-1,{w}), "MARKET")')
+            feature_exprs.append(f'Mask(Mean($volume,{w})/$volume, "MARKET")')
+            feature_exprs.append(f'Mask(Std($volume,{w})/$volume, "MARKET")')
+
+        return feature_names, feature_exprs
+
+
+class MASTERTSDatasetH(TSDatasetH):
+    """
+    MASTER Time Series Dataset with Handler
+
+    Args:
+        market_data_handler_config (dict): market data handler config
+    """
+
+    def __init__(
+            self,
+            market_data_handler_config=Dict,
+            **kwargs,
+    ):
+        super().__init__(**kwargs)
+        marketdl = marketDataHandler(**market_data_handler_config)
+        self.market_dataset = DatasetH(marketdl, segments=self.segments)
+
+    def get_market_information(
+            self,
+            slc: slice,
+    ) -> Union[List[pd.DataFrame], pd.DataFrame]:
+        return self.market_dataset.prepare(slc)
+
+    def _prepare_seg(self, slc: slice, **kwargs) -> TSDataSampler:
+        dtype = kwargs.pop("dtype", None)
+        if not isinstance(slc, slice):
+            slc = slice(*slc)
+        start, end = slc.start, slc.stop
+        flt_col = kwargs.pop("flt_col", None)
+        # TSDatasetH will retrieve more data for complete time-series
+
+        ext_slice = self._extend_slice(slc, self.cal, self.step_len)
+        only_label = kwargs.pop("only_label", False)
+        data = super(TSDatasetH, self)._prepare_seg(ext_slice, **kwargs)
+
+        ############################## Add market information ###########################
+        # If we only need label for testing, we do not need to add market information
+        if not only_label:
+            marketData = self.get_market_information(ext_slice)
+            cols = pd.MultiIndex.from_tuples([("feature", feature) for feature in marketData.columns])
+            marketData = pd.DataFrame(marketData.values, columns=cols, index=marketData.index)
+            # data = data.iloc[:, :-1].join(marketData).join(data.iloc[:, -1])
+            data = pd.merge(data.reset_index().set_index('datetime').iloc[:,:-1], marketData.droplevel('instrument'), left_on='datetime', right_index=True, how='left').reset_index().set_index(['datetime', 'instrument']).join(data.iloc[:,-1])
+        #################################################################################
+        flt_kwargs = copy.deepcopy(kwargs)
+        if flt_col is not None:
+            flt_kwargs["col_set"] = flt_col
+            flt_data = super()._prepare_seg(ext_slice, **flt_kwargs)
+            assert len(flt_data.columns) == 1
+        else:
+            flt_data = None
+
+        tsds = TSDataSampler(
+            data=data,
+            start=start,
+            end=end,
+            step_len=self.step_len,
+            dtype=dtype,
+            flt_data=flt_data,
+            fillna_type="ffill+bfill"
+        )
+        return tsds
+
+
+class TSRankICDatasetH(DatasetH):
+    """
+    包含 RankIC、RankICIR 的 TSDatasetH
+    (T)ime-(S)eries Dataset (H)andler
+
+
+    Convert the tabular data to Time-Series data
+
+    Requirements analysis
+
+    The typical workflow of a user to get time-series data for an sample
+    - process features
+    - slice proper data from data handler:  dimension of sample <feature, >
+    - Build relation of samples by <time, instrument> index
+        - Be able to sample times series of data <timestep, feature>
+        - It will be better if the interface is like "torch.utils.data.Dataset"
+    - User could build customized batch based on the data
+        - The dimension of a batch of data <batch_idx, feature, timestep>
+    """
+
+    DEFAULT_STEP_LEN = 30
+    # DEFAULT_STEP_LEN = 1000
+
+    def __init__(self, step_len=DEFAULT_STEP_LEN, label_shift=240, **kwargs):
+        self.step_len = step_len
+        self.label_shift = label_shift
+        super().__init__(**kwargs)
+
+    def config(self, **kwargs):
+        if "step_len" in kwargs:
+            self.step_len = kwargs.pop("step_len")
+        super().config(**kwargs)
+
+    def setup_data(self, **kwargs):
+        super().setup_data(**kwargs)
+        # make sure the calendar is updated to latest when loading data from new config
+        cal = self.handler.fetch(col_set=self.handler.CS_RAW).index.get_level_values("datetime").unique()
+        self.cal = sorted(cal)
+
+    @staticmethod
+    def _extend_slice(slc: slice, cal: list, step_len: int) -> slice:
+        # Dataset decide how to slice data(Get more data for timeseries).
+        start, end = slc.start, slc.stop
+        start_idx = bisect.bisect_left(cal, pd.Timestamp(start))
+        pad_start_idx = max(0, start_idx - step_len)
+        pad_start = cal[pad_start_idx]
+        return slice(pad_start, end)
+
+    def _prepare_seg(self, slc: slice, **kwargs) -> TSDataSampler:
+        """
+        split the _prepare_raw_seg is to leave a hook for data preprocessing before creating processing data
+        NOTE: TSDatasetH only support slc segment on datetime !!!
+        """
+        dtype = kwargs.pop("dtype", None)
+        if not isinstance(slc, slice):
+            slc = slice(*slc)
+        start, end = slc.start, slc.stop
+        flt_col = kwargs.pop("flt_col", None)
+        # TSDatasetH will retrieve more data for complete time-series
+
+        ext_slice = self._extend_slice(slc, self.cal, self.step_len)
+        data = super()._prepare_seg(ext_slice, **kwargs)
+
+        flt_kwargs = deepcopy(kwargs)
+        if flt_col is not None:
+            flt_kwargs["col_set"] = flt_col
+            flt_data = super()._prepare_seg(ext_slice, **flt_kwargs)
+            assert len(flt_data.columns) == 1
+        else:
+            flt_data = None
+
+        # 构造各因子滚动窗口 RankIC、RankICIR
+        ##############################################################################################################
+        # 取出特征列和收益列
+        feature_cols = [col for col in data.columns if col[0] == "feature"]
+        ret_col = ("feature", f"ret_{self.label_shift}")
+
+        # 目标因子 = 所有非 ret_ 开头的特征列
+        target_factors = [col for col in feature_cols if not col[1].startswith("ret_")]
+
+        # 存储每个因子的历史截面 RankIC 时间序列
+        rankic_df = pd.DataFrame(index=data.index.get_level_values("datetime").unique(),
+                                 columns=[f[1] for f in target_factors])
+
+        # 原 RankIC 按时间截面计算（不变）
+        for dt, df_dt in data.groupby(level="datetime"):
+            y = df_dt[ret_col]
+            for factor in target_factors:
+                x = df_dt[factor]
+                corr = spearmanr(x, y)[0]
+                rankic_df.at[dt, factor[1]] = corr
+
+        # 向后移动 N 个周期，避免泄露未来收益
+        rankic_df = rankic_df.shift(self.label_shift)
+        # 再进行缺失值填充
+        rankic_df = rankic_df.fillna(method="ffill")
+        rankic_df = rankic_df.astype(np.float32)
+
+        # 2. 滚动计算 RankICIR，窗口大小
+        # 这里注意频率，当前计算 Alpha158 因子已经 x 24，所以这里的窗口大小对应的是日频
+        # rankic_windows = [60, 120, 240]
+        rankic_windows = [240, 720, 1440]
+        # rankic_windows = [1, 10, 24]
+        # rankic_windows = [720]
+
+        # 创建列名
+        for factor in target_factors:
+            f_name = factor[1]
+            for win in rankic_windows:
+                data[("feature", f"{f_name}_RankIC{win}")] = data.index.get_level_values("datetime").map(
+                    rankic_df[f_name].rolling(win).mean())
+                # data[("feature", f"{f_name}_RankICIR{win}")] = data.index.get_level_values("datetime").map(
+                #     rankic_df[f_name].rolling(win).mean() / rankic_df[f_name].rolling(win).std())
+
+        # 3. 删除 ret_ 开头的因子
+        ret_cols = [col for col in feature_cols if col[1].startswith("ret_")]
+        data.drop(columns=ret_cols, inplace=True)
+        # 这里我选择直接删除最前面为 NaN 的数据
+        # 构造完所有 RankICIR 后统一 dropna
+        # data.dropna(
+        #     subset=[('feature', f"{f[1]}_RankICIR{win}") for f in target_factors for win in rankic_windows],
+        #     inplace=True)
+        data.dropna(subset=[('feature', f"{f[1]}_RankIC{win}") for f in target_factors for win in rankic_windows], inplace=True)
+        feature_cols = [col for col in data.columns if col[0] == "feature"]
+        label_cols = [col for col in data.columns if col[0] == 'label']
+        new_col_order = feature_cols + label_cols
+        data = data[new_col_order]
+        ##############################################################################################################
+
+        tsds = TSDataSampler(
+            data=data,
+            start=start,
+            end=end,
+            step_len=self.step_len,
+            dtype=dtype,
+            flt_data=flt_data,
+        )
+        return tsds
