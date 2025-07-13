@@ -417,3 +417,26 @@ class TimeRangeFlt(InstProcessor):
         ):
             return df
         return df.head(0)
+
+class DropZeroLabel(Processor):
+    """删除 label 为 0 的样本， 针对小时数据错误的问题临时解决方法"""
+
+    def __init__(self, fields_group="label"):
+        self.fields_group = fields_group
+
+    def __call__(self, df, **kwargs):
+        # 获取当前处理的字段组
+        if self.fields_group not in df.columns.get_level_values(0):
+            raise ValueError(f"字段组 {self.fields_group} 不存在于输入数据中")
+
+        # 获取 label 字段组的所有列
+        label_cols = df[self.fields_group].columns if isinstance(df.columns, pd.MultiIndex) else [self.fields_group]
+
+        # 构造 mask，保留非零行（任一 label 字段非零）
+        non_zero_mask = (df[self.fields_group][label_cols] != 0).any(axis=1)
+
+        return df[non_zero_mask]
+
+    def is_for_infer(self) -> bool:
+        """因为是根据 label 筛选，不能用于推理阶段"""
+        return True
