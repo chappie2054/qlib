@@ -9,6 +9,9 @@ import numpy as np
 import pandas as pd
 
 from typing import Union, List, Type
+
+from exceptiongroup import catch
+from pandas.core.interchange.dataframe_protocol import DataFrame
 from scipy.stats import percentileofscore
 from .base import Expression, ExpressionOps, Feature, PFeature
 from ..log import get_module_logger
@@ -31,6 +34,49 @@ except ValueError:
 
 
 np.seterr(invalid="ignore")
+
+
+#################### Special Operator ####################
+class Today(Expression):
+    """
+    Return today
+
+    Parameters
+    ----------
+
+    Returns
+    ----------
+    Expression
+        Calendar days since BASE_DAY(1970-01-01), it can be easily convert to `pd.Timestamp` by pd.Timestamp(today, unit='d')
+
+    """
+
+    BASE_DAY = pd.Timestamp("1970-01-01")
+
+    def __str__(self):
+        return "Date()"
+
+    @property
+    def adjust_status(self):
+        fields_need_adjust = C.get("fields_need_adjust", {})
+        return fields_need_adjust.get(str(self), 0)
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        freq = args[0]
+
+        from .data import Cal  # pylint: disable=C0415
+
+        _calendar = Cal.calendar(freq=freq)
+        return pd.Series(
+            [(d - Today.BASE_DAY).days for d in _calendar[start_index : end_index + 1]],
+            index=pd.RangeIndex(start_index, end_index + 1),
+        )
+
+    def get_longest_back_rolling(self):
+        return 0
+
+    def get_extended_window_size(self):
+        return 0, 0
 
 
 #################### Element-Wise Operator ####################
@@ -92,6 +138,12 @@ class ChangeInstrument(ElemOperator):
 
     def _load_internal(self, instrument, start_index, end_index, *args):
         return self.feature.load(instrument, start_index, end_index, *args)
+
+
+class Neg(ElemOperator):
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        return -series
 
 
 class NpElemOperator(ElemOperator):
@@ -353,6 +405,57 @@ class Power(NpPairOperator):
 
     def __init__(self, feature_left, feature_right):
         super(Power, self).__init__(feature_left, feature_right, "power")
+
+
+class SignedPower(PairOperator):
+    """Power Operator"""
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        assert any(
+            [isinstance(self.feature_left, (Expression,)), self.feature_right, Expression]
+        ), "at least one of two inputs is Expression instance"
+        if isinstance(self.feature_left, (Expression,)):
+            series_left = self.feature_left.load(instrument, start_index, end_index, *args)
+        else:
+            series_left = self.feature_left  # numeric value
+        if isinstance(self.feature_right, (Expression,)):
+            series_right = self.feature_right.load(instrument, start_index, end_index, *args)
+        else:
+            series_right = self.feature_right
+        check_length = isinstance(series_left, (np.ndarray, pd.Series)) and isinstance(
+            series_right, (np.ndarray, pd.Series)
+        )
+        if check_length:
+            warning_info = (
+                f"Loading {instrument}: {str(self)}; signedpower(series_left, series_right), "
+                f"The length of series_left and series_right is different: ({len(series_left)}, {len(series_right)}), "
+                f"series_left is {str(self.feature_left)}, series_right is {str(self.feature_right)}. Please check the data"
+            )
+        else:
+            warning_info = (
+                f"Loading {instrument}: {str(self)}; signedpower(series_left, series_right), "
+                f"series_left is {str(self.feature_left)}, series_right is {str(self.feature_right)}. Please check the data"
+            )
+        try:
+            res = np.power(series_left.abs(), series_right) * np.sign(series_left)
+        except ValueError as e:
+            get_module_logger(self.__class__.__name__).debug(warning_info)
+            raise ValueError(f"{str(e)}. \n\t{warning_info}") from e
+        else:
+            if check_length and len(series_left) != len(series_right):
+                get_module_logger(self.__class__.__name__).debug(warning_info)
+        return res
+
+    @property
+    def adjust_status(self):
+        if (
+            isinstance(self.feature_left, Expression)
+            and self.feature_left.adjust_status != 0
+            or isinstance(self.feature_right, Expression)
+            and self.feature_right.adjust_status != 0
+        ):
+            get_module_logger(self.__class__.__name__).debug(f"Adjust status not 0 for {str(self)}")
+        return 0
 
 
 class Add(NpPairOperator):
@@ -778,6 +881,44 @@ class Rolling(ExpressionOps):
             return lft_etd, rght_etd
 
 
+class NpRolling(Rolling):
+    """Rolling Operator for some operations which hasn't been implemented in pandas.Rolling,
+    we use raw numpy function in such cases
+
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+    N : int
+        rolling window size
+
+    Returns
+    ----------
+    Expression
+        a feature instance with rolling Product
+    """
+
+    def __init__(self, feature, N, func):
+        super().__init__(feature, N, func)
+        self.npfunc = getattr(np, func)
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        # NOTE: remove all null check,
+        # now it's user's responsibility to decide whether to use features in null days
+        # isnull = series.isnull() # NOTE: isnull = NaN, inf is not null
+        if isinstance(self.N, int) and self.N == 0:
+            series = series.expanding(min_periods=1).apply(self.npfunc, raw=True)
+        elif isinstance(self.N, float) and 0 < self.N < 1:
+            series = series.ewm(alpha=self.N, min_periods=1).mean()
+        else:
+            series = series.rolling(self.N, min_periods=1).apply(self.npfunc, raw=True)
+            # series.iloc[:self.N-1] = np.nan
+        # series[isnull] = np.nan
+        series.loc[series.abs() < 1e-10] = 0
+        return series
+
+
 class Ref(Rolling):
     """Feature Reference
 
@@ -862,6 +1003,32 @@ class Sum(Rolling):
 
     def __init__(self, feature, N):
         super(Sum, self).__init__(feature, N, "sum")
+
+
+class Prod(NpRolling):
+    """Rolling Prod
+
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+    N : int
+        rolling window size
+
+    Returns
+    ----------
+    Expression
+        a feature instance with rolling sum
+    """
+
+    def __init__(self, feature, N):
+        super(Prod, self).__init__(feature, N, "prod")
+
+    @property
+    def adjust_status(self):
+        if isinstance(self.feature, Expression):
+            return self.feature.adjust_status * self.N
+        return 0
 
 
 class Std(Rolling):
@@ -1520,6 +1687,113 @@ class Cov(PairRolling):
         super(Cov, self).__init__(feature_left, feature_right, N, "cov")
 
 
+#################### cross section operator ####################
+class XSectionOperator(ElemOperator):
+    producer_instrument = {}
+
+    # def set_population(self, population):
+    #     super(XSectionOperator, self).set_population(population)
+    #     population_sorted = sorted(population)
+    #     if str(self) not in self.producer_instrument:
+    #         self.producer_instrument[str(self)] = population_sorted[
+    #             len(self.producer_instrument) % len(population_sorted)
+    #         ]
+
+    def _process_df(self, df, **_) -> pd.DataFrame:
+        raise NotImplementedError("This function must be implemented in your newly defined feature")
+
+    def _load_internal(self, instrument, start_index, end_index, *args) -> pd.DataFrame:
+        df = self.feature.load(instrument, start_index, end_index, *args)
+        return df
+
+
+class CSRank(XSectionOperator):
+    def _process_df(self, df, **_) -> pd.DataFrame:
+        return df.rank(axis=1, pct=True)
+
+
+class CSScale(XSectionOperator):
+    def _process_df(self, df, **_) -> pd.DataFrame:
+        return df.div(df.abs().sum(axis=1), axis=0)
+
+
+#################### other kind of operator ####################
+# trailing stop loss
+class TrailingStop(ExpressionOps):
+    def __init__(self, feature_c, feature_h, feature_l, N, stop_loss_mode=0, stop_loss_threshold=(0.05, 0.02, 0.06)):
+        self.feature_c = feature_c
+        self.feature_h = feature_h
+        self.feature_l = feature_l
+        self.N = N
+        self.stop_loss_mode = stop_loss_mode
+        self.stop_loss_threshold = stop_loss_threshold
+
+    @property
+    def is_pit(self):
+        return False
+
+    def _get_stop_loss_factor(self, current_ret=0.0):
+        if self.stop_loss_mode == 0:
+            return 1 - self.stop_loss_threshold
+        if self.stop_loss_mode == 1:
+            if current_ret < 0:
+                return 1 - self.stop_loss_threshold[0]
+            if current_ret > self.stop_loss_threshold[2]:
+                return 1 - self.stop_loss_threshold[1]
+            return 1 - (
+                (self.stop_loss_threshold[0] - self.stop_loss_threshold[1])
+                * (current_ret / self.stop_loss_threshold[2] - 1) ** 2
+                + self.stop_loss_threshold[1]
+            )
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        assert (
+            isinstance(self.feature_c, Expression)
+            and isinstance(self.feature_h, Expression)
+            and isinstance(self.feature_l, Expression)
+        ), "close/high/low must be feature"
+        assert isinstance(self.N, int) and self.N < 0, "N must be negative integer (looking forward)"
+        series_c = self.feature_c.load(instrument, start_index, end_index, *args)
+        series_h = self.feature_h.load(instrument, start_index, end_index, *args)
+        series_l = self.feature_l.load(instrument, start_index, end_index, *args)
+        series = pd.Series(index=series_c.index)
+        if not series.empty:
+            for idx in range(max(series.index.min(), start_index), min(series.index.max(), end_index) + self.N):
+                try:
+                    high_high = series_c.loc[idx]
+                    for jdx in range(idx + 1, idx - self.N + 1):
+                        if high_high < series_h.loc[jdx]:
+                            stop_loss_factor = self._get_stop_loss_factor(high_high / series_c.loc[idx] - 1)
+                            if series_l.loc[jdx] < high_high * stop_loss_factor:
+                                series.loc[idx] = high_high * stop_loss_factor / series_c[idx] - 1
+                                break
+                            high_high = series_h.loc[jdx]
+                        stop_loss_factor = self._get_stop_loss_factor(high_high / series_c.loc[idx] - 1)
+                        if series_l.loc[jdx] < high_high * stop_loss_factor:
+                            series.loc[idx] = high_high * stop_loss_factor / series_c[idx] - 1
+                            break
+                    if pd.isna(series.loc[idx]):
+                        series.loc[idx] = series_c.loc[idx - self.N] / series_c.loc[idx] - 1
+                except Exception:
+                    print(instrument, start_index, end_index)
+                    raise
+        return series
+
+    def get_longest_back_rolling(self):
+        c_br = self.feature_c.get_longest_back_rolling()
+        h_br = self.feature_h.get_longest_back_rolling() + self.N
+        l_br = self.feature_l.get_longest_back_rolling() + self.N
+
+        return max(c_br, h_br, l_br)
+
+    def get_extended_window_size(self):
+        cl, cr = self.feature_c.get_extended_window_size()
+        ll, lr = self.feature_l.get_extended_window_size()
+        hl, hr = self.feature_h.get_extended_window_size()
+        return max(cl, ll, hl), max(cr, max(lr, hr) - self.N + 1)
+
+
+
 #################### Operator which only support data with time index ####################
 # Convention
 # - The name of the operators in this section will start with "T"
@@ -1564,12 +1838,15 @@ class TResample(ElemOperator):
 
 TOpsList = [TResample]
 OpsList = [
+    Today,
     ChangeInstrument,
+    Neg,
     Rolling,
     Ref,
     Max,
     Min,
     Sum,
+    Prod,
     Mean,
     Std,
     Var,
@@ -1592,6 +1869,7 @@ OpsList = [
     Sign,
     Log,
     Power,
+    SignedPower,
     Add,
     Sub,
     Mul,
@@ -1613,6 +1891,9 @@ OpsList = [
     If,
     Feature,
     PFeature,
+    TrailingStop,
+    CSRank,
+    CSScale,
 ] + [TResample]
 
 
