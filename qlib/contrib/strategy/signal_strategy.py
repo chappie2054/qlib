@@ -394,7 +394,7 @@ class EnhancedIndexingStrategy(WeightStrategyBase):
     `qlib.model.riskmodel.structured.StructuredCovEstimator` to prepare these data.
 
     Args:
-        riskmodel_path (str): risk model path
+        riskmodel_root (str): risk model path
         name_mapping (dict): alternative file names
     """
 
