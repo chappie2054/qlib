@@ -18,6 +18,7 @@ dist/
 .vim
 .nvimrc
 .vscode
+.lingma
 
 qlib/VERSION.txt
 qlib/data/_libs/expanding.cpp
@@ -52,3 +53,4 @@ tags
 .idea/
 .aider*
 /workspace/
+project_rule.md
