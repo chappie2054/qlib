@@ -1,4 +1,4 @@
-# factors_batch_group_test.py
+# batch_group_test.py
 
 import numpy as np
 import pandas as pd
@@ -7,32 +7,7 @@ from joblib import Parallel, delayed
 from tqdm.notebook import tqdm
 
 from ..graph import ScatterGraph, BarGraph
-from ..utils import guess_plotly_rangebreaks
-
-def _rankic_direction(factor: pd.Series, label: pd.Series) -> int:
-    """
-    计算因子与label的RankIC，用于判断因子方向。
-    返回1或-1。
-    """
-    # 对每个时间截面计算秩相关
-    dates = factor.index.get_level_values(0).unique()
-    rankics = []
-    for dt in dates:
-        try:
-            fac_slice = factor.loc[dt]
-            lab_slice = label.loc[dt]
-            common_idx = fac_slice.dropna().index.intersection(lab_slice.dropna().index)
-            if len(common_idx) >= 5:
-                fac_rank = fac_slice.loc[common_idx].rank()
-                lab_rank = lab_slice.loc[common_idx].rank()
-                rankic = fac_rank.corr(lab_rank)
-                if not np.isnan(rankic):
-                    rankics.append(rankic)
-        except Exception:
-            continue
-    mean_rankic = np.nanmean(rankics)
-    return 1 if mean_rankic >= 0 else -1
-
+from ..utils import guess_plotly_rangebreaks, _rankic_direction
 
 def _vectorized_group_test(factor: pd.Series, label: pd.Series, group_num: int, direction: int) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
@@ -126,7 +101,7 @@ def _process_single_factor(col, factor_series, label_series, group_num):
     return col[1], avg_returns, group_returns_df, group_cum_returns_df, weighted_returns_df
 
 
-def batch_factors_group_test(factors_df: pd.DataFrame, group_num: int = 5, show_notebook: bool = True):
+def batch_factors_group_test(factors_df: pd.DataFrame, group_num: int = 10, show_notebook: bool = True):
     assert isinstance(factors_df.columns, pd.MultiIndex)
 
     # 提取 label 列

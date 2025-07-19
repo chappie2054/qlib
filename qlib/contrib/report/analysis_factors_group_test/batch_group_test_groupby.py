@@ -5,31 +5,7 @@ from joblib import Parallel, delayed
 from tqdm.notebook import tqdm
 
 from ..graph import ScatterGraph, BarGraph
-from ..utils import guess_plotly_rangebreaks
-
-
-def _rankic_direction(factor: pd.Series, label: pd.Series) -> int:
-    """
-    计算因子与label的RankIC，用于判断因子方向。
-    返回1或-1。
-    """
-    dates = factor.index.get_level_values(0).unique()
-    rankics = []
-    for dt in dates:
-        try:
-            fac_slice = factor.loc[dt]
-            lab_slice = label.loc[dt]
-            common_idx = fac_slice.dropna().index.intersection(lab_slice.dropna().index)
-            if len(common_idx) >= 5:
-                fac_rank = fac_slice.loc[common_idx].rank()
-                lab_rank = lab_slice.loc[common_idx].rank()
-                rankic = fac_rank.corr(lab_rank)
-                if not np.isnan(rankic):
-                    rankics.append(rankic)
-        except Exception:
-            continue
-    mean_rankic = np.nanmean(rankics)
-    return 1 if mean_rankic >= 0 else -1
+from ..utils import guess_plotly_rangebreaks, _rankic_direction
 
 
 def _group_test_groupby(factor: pd.Series, label: pd.Series, group_num: int, direction: int) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -82,15 +58,31 @@ def _process_single_factor(col, factor_series, label_series, group_num):
     return col[1], avg_returns, group_returns_df, group_cum_returns_df, weighted_returns_df
 
 
-def batch_factors_group_test(factors_df: pd.DataFrame, group_num: int = 5, show_notebook: bool = True):
+def batch_factors_group_test(factors_df: pd.DataFrame, group_num: int = 10, show_notebook: bool = True):
     assert isinstance(factors_df.columns, pd.MultiIndex)
     label_col = [col for col in factors_df.columns if col[0] == 'label'][0]
     label_series = factors_df[label_col].astype(np.float32)
+
+    # 提取调仓周期（假设形如 'label_72'）
+    try:
+        rebalance_period = int(label_col[1].split('_')[1])
+    except (IndexError, ValueError):
+        raise ValueError(f"label 名 {label_col[1]} 不是合法格式，无法解析周期数")
+
+    # 获取采样的时间点（每rebalance_period取一个）
+    unique_times = sorted(label_series.index.get_level_values(0).unique())
+    selected_times = unique_times[::rebalance_period]
+
+    # 只保留调仓时间点上的数据
+    sampled_index = factors_df.index.get_level_values(0).isin(selected_times)
+    sampled_factors_df = factors_df.loc[sampled_index]
+    sampled_label_series = label_series.loc[sampled_index]
+
     feature_cols = [col for col in factors_df.columns if col[0] == 'feature']
 
     results = Parallel(n_jobs=-1)(
         delayed(_process_single_factor)(
-            col, factors_df[col].astype(np.float32), label_series, group_num
+            col, sampled_factors_df[col].astype(np.float32), sampled_label_series, group_num
         )
         for col in tqdm(feature_cols, desc='Processing Factors')
     )
