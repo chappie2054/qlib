@@ -692,13 +692,34 @@ class AlphaBestFactors(DataHandlerLP):
         """构造 Crypto 场景下的动量、波动率与其他 Barra 风格风险因子"""
         alpha_components = {}
 
-        alpha_components["Alpha191_150"] = f"Log(($close+$high+$low)/3*$volume)"
+        # Alpha191
+        alpha_components["alpha191_150"] = f"Log(($close+$high+$low)/3*$volume)"
+        alpha_components["alpha191_176"] = f"Corr(CSRank((($close - Min($low, 12)) / (Max($high, 12) - Min($low,12)))), CSRank($volume), 6)"
 
-        # 其他Barra风格因子
-        expressions = ['($high-$low)/$open', 'Corr($close, Log($volume+1), 60)', 'Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 60)']
-        names = ['KLEN', 'CORR60', 'CORD60']
+        # # alpha_components["alpha191_057"] = f"EMA(($close-Min($low,9))/(Max($high,9)-Min($low,9))*100,1/3)"
+        # alpha_components["alpha191_082"] = f"EMA((Max($high,6)-$close)/(Max($high,6)-Min($low,6))*100,1/20)"
+        # # alpha_components["alpha191_079"] = f"EMA(Greater($close-Ref($close,1),0),1/12)/EMA(Abs($close-Ref($close,1)),1/12)*100"
+        # # alpha_components["alpha191_072"] = f"EMA((Max($high,6)-$close)/(Max($high,6)-Min($low,6))*100,1/15)"
 
-        for name, expr in zip(names, expressions):
-            alpha_components[name] = expr
+        # Alpha158
+        alpha_components["RSQR60"] = f"Rsquare($close, 60)"
+        alpha_components["CORR10"] = f"Corr($close, Log($volume+1), 10)"
+        alpha_components["WVMA20"] = f"Std(Abs($close/Ref($close, 1)-1)*$volume, 20)/(Mean(Abs($close/Ref($close, 1)-1)*$volume, 20)+1e-12)"
+
+        # alpha_components["RSV5"] = f"($close-Min($low, 5))/(Max($high, 5)-Min($low, 5)+1e-12)"
+        # alpha_components["CORD5"] = f"Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 5)"
+        # # alpha_components["CORD10"] = f"Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 10)"
+        # # alpha_components["SUMP30"] = f"Sum(Greater($close-Ref($close, 1), 0), 30)/(Sum(Abs($close-Ref($close, 1)), 30)+1e-12)"
+        # # alpha_components["SUMP60"] = f"Sum(Greater($close-Ref($close, 1), 0), 60)/(Sum(Abs($close-Ref($close, 1)), 60)+1e-12)"
+        # # alpha_components["SUMN30"] = f"Sum(Greater(Ref($close, 1)-$close, 0), 30)/(Sum(Abs($close-Ref($close, 1)), 30)+1e-12)"
+        # # alpha_components["SUMN60"] = f"Sum(Greater(Ref($close, 1)-$close, 0), 60)/(Sum(Abs($close-Ref($close, 1)), 60)+1e-12)"
+        # # alpha_components["SUMD30"] = f"(Sum(Greater($close-Ref($close, 1), 0), 30)-Sum(Greater(Ref($close, 1)-$close, 0), 30))/(Sum(Abs($close-Ref($close, 1)), 30)+1e-12)"
+        # alpha_components["SUMD60"] = f"(Sum(Greater($close-Ref($close, 1), 0), 60)-Sum(Greater(Ref($close, 1)-$close, 0), 60))/(Sum(Abs($close-Ref($close, 1)), 60)+1e-12)"
+
+        # # 其他Barra风格因子
+        # expressions = ['($high-$low)/$open', 'Corr($close, Log($volume+1), 60)', 'Corr($close/Ref($close,1), Log($volume/Ref($volume, 1)+1), 60)']
+        # names = ['KLEN', 'CORR60', 'CORD60']
+        # for name, expr in zip(names, expressions):
+        #     alpha_components[name] = expr
 
         return list(alpha_components.values()), list(alpha_components.keys())
