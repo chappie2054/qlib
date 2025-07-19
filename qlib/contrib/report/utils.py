@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
 
 def sub_fig_generator(sub_figsize=(3, 3), col_n=10, row_n=1, wspace=None, hspace=None, sharex=False, sharey=False):
@@ -72,3 +73,27 @@ def guess_plotly_rangebreaks(dt_index: pd.DatetimeIndex):
         if gap > min_gap:
             gaps_to_break.setdefault(gap - min_gap, []).append(d + min_gap)
     return [dict(values=v, dvalue=int(k.total_seconds() * 1000)) for k, v in gaps_to_break.items()]
+
+
+def _rankic_direction(factor: pd.Series, label: pd.Series) -> int:
+    """
+    计算因子与label的RankIC，用于判断因子方向。
+    返回1或-1。
+    """
+    dates = factor.index.get_level_values(0).unique()
+    rankics = []
+    for dt in dates:
+        try:
+            fac_slice = factor.loc[dt]
+            lab_slice = label.loc[dt]
+            common_idx = fac_slice.dropna().index.intersection(lab_slice.dropna().index)
+            if len(common_idx) >= 5:
+                fac_rank = fac_slice.loc[common_idx].rank()
+                lab_rank = lab_slice.loc[common_idx].rank()
+                rankic = fac_rank.corr(lab_rank)
+                if not np.isnan(rankic):
+                    rankics.append(rankic)
+        except Exception:
+            continue
+    mean_rankic = np.nanmean(rankics)
+    return 1 if mean_rankic >= 0 else -1
