@@ -13,7 +13,7 @@ from qlib.data import D
 from qlib.data.dataset import Dataset
 from qlib.model.base import BaseModel
 from qlib.strategy.base import BaseStrategy
-from qlib.backtest.position import Position
+from qlib.backtest.position import Position, BasePosition
 from qlib.backtest.signal import Signal, create_signal_from
 from qlib.backtest.decision import Order, OrderDir, TradeDecisionWO
 from qlib.log import get_module_logger
@@ -292,6 +292,147 @@ class TopkDropoutStrategy(BaseSignalStrategy):
                 direction=Order.BUY,  # 1 for buy
             )
             buy_order_list.append(buy_order)
+        return TradeDecisionWO(sell_order_list + buy_order_list, self)
+
+
+class LongShortTopkDropoutStrategy(BaseSignalStrategy):
+    def __init__(
+        self,
+        *, 
+        percentageByGroup,
+        hold_thresh=1, # 最低持有期
+        rebalancing_steps=3, # 调仓周期
+        only_tradable=False,
+        forbid_all_trade_at_limit=False,
+        long_risk_degree=0.45,
+        short_risk_degree=0.45,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.percentageByGroup = percentageByGroup  # 多空分组百分比
+        self.hold_thresh = hold_thresh
+        self.rebalancing_steps = rebalancing_steps
+        self.only_tradable = only_tradable
+        self.forbid_all_trade_at_limit = forbid_all_trade_at_limit
+        self.long_risk_degree = long_risk_degree  # 多头风险敞口
+        self.short_risk_degree = short_risk_degree  # 空头风险敞口
+        self.rebalancing_every_day = True if rebalancing_steps == 1 else False
+
+        self.hold_count = 0
+
+    def generate_trade_decision(self, execute_result=None):
+        trade_step = self.trade_calendar.get_trade_step()
+
+        trade_start_time, trade_end_time = self.trade_calendar.get_step_time(trade_step)
+        pred_start_time, pred_end_time = self.trade_calendar.get_step_time(trade_step, shift=1)
+        pred_score = self.signal.get_signal(start_time=pred_start_time, end_time=pred_end_time)
+
+        # 检查pred_start_time是否不是08:00:00
+        if pred_start_time.strftime("%H:%M:%S") != ("00:00:00" if self.trade_calendar.freq == "day" else "08:00:00"):
+            return TradeDecisionWO([], self)
+
+        self.hold_count += 1
+
+        if isinstance(pred_score, pd.DataFrame):
+            pred_score = pred_score.iloc[:, 0]
+
+        if pred_score is None or (self.hold_count % self.rebalancing_steps != 1 and not self.rebalancing_every_day): # pred_score not None & Trade every 3 days
+            return TradeDecisionWO([], self)
+
+        # 获取可交易股票过滤函数
+        if self.only_tradable:
+            def filter_tradable(stocks):
+                return [s for s in stocks if self.trade_exchange.is_stock_tradable(
+                    stock_id=s, start_time=trade_start_time, end_time=trade_end_time)]
+        else:
+            filter_tradable = lambda x: x
+
+        # 计算多空分组
+        total_stocks = len(pred_score)
+        group_size = max(1, int(total_stocks // self.percentageByGroup))
+
+        # 排序并获取多空分组
+        sorted_scores = pred_score.sort_values(ascending=False)
+        last_top_group = filter_tradable(sorted_scores.index[:group_size].tolist())
+        last_bottom_group = filter_tradable(sorted_scores.index[-group_size:].tolist())
+
+        # TODO 这种方式适配 NestedExecutor 吗？
+        trade_account = self.common_infra.get('trade_account')
+        current_temp = trade_account.current_position
+        sell_order_list = []
+        buy_order_list = []
+
+        # 1 处理多头仓位：卖出不在当前TopGroup的股票
+        current_long_stocks = [s for s in current_temp.get_stock_list() if current_temp.get_stock_amount(s) > 0]
+        for code in current_long_stocks:
+            if code not in last_top_group:
+                if current_temp.get_stock_count(code, bar=self.trade_calendar.get_freq()) >= self.hold_thresh and self.trade_exchange.is_stock_tradable(
+                    stock_id=code, start_time=trade_start_time, end_time=trade_end_time, direction=OrderDir.SELL
+                ):
+                    sell_amount = current_temp.get_stock_amount(code)
+                    sell_order = Order(
+                        stock_id=code, amount=sell_amount * -1, direction=Order.SELL,
+                        start_time=trade_start_time, end_time=trade_end_time
+                    )
+                    if self.trade_exchange.check_order(sell_order):
+                        trade_val, trade_cost, _ = self.trade_exchange.deal_order(sell_order, trade_account=trade_account, is_close_order=True)
+            else:
+                last_top_group.remove(code)
+
+        # 2 处理空头仓位：平仓不在当前BottomGroup的股票
+        current_short_stocks = [s for s in current_temp.get_stock_list() if current_temp.get_stock_amount(s) < 0]
+        for code in current_short_stocks:
+            if code not in last_bottom_group:
+                if current_temp.get_stock_count(code, bar=self.trade_calendar.get_freq()) >= self.hold_thresh and self.trade_exchange.is_stock_tradable(
+                    stock_id=code, start_time=trade_start_time, end_time=trade_end_time, direction=OrderDir.BUY
+                ):
+                    cover_amount = -current_temp.get_stock_amount(code)  # 平仓数量为负仓位的绝对值
+                    buy_order = Order(
+                        stock_id=code, amount=cover_amount, direction=Order.BUY,
+                        start_time=trade_start_time, end_time=trade_end_time
+                    )
+                    if self.trade_exchange.check_order(buy_order):
+                        trade_val, trade_cost, _ = self.trade_exchange.deal_order(buy_order, trade_account=trade_account, is_close_order=True)
+            else:
+                last_bottom_group.remove(code)
+
+        # 3 计算资金分配
+        # - 依据多空风险限制和当前多空市值占比计算多空剩余可支配现金
+        long_stocks_total_value, short_stocks_total_value = trade_account.current_position.calculate_long_short_value()
+        total_values = long_stocks_total_value + short_stocks_total_value + trade_account.current_position.position['cash']
+        long_cash = (total_values * self.long_risk_degree - long_stocks_total_value)/ len(last_top_group) if last_top_group else 0
+        short_cash = (total_values * self.short_risk_degree - short_stocks_total_value)/ len(last_bottom_group) if last_bottom_group else 0
+
+        # 4. 买入新的多头股票
+        for code in last_top_group:
+            if self.trade_exchange.is_stock_tradable(
+                stock_id=code, start_time=trade_start_time, end_time=trade_end_time, direction=OrderDir.BUY
+            ):
+                buy_price = self.trade_exchange.get_deal_price(code, trade_start_time, trade_end_time, OrderDir.BUY)
+                buy_amount = long_cash / buy_price
+                factor = self.trade_exchange.get_factor(code, trade_start_time, trade_end_time)
+                buy_amount = self.trade_exchange.round_amount_by_trade_unit(buy_amount, factor)
+                buy_order = Order(
+                    stock_id=code, amount=buy_amount, direction=Order.BUY,
+                    start_time=trade_start_time, end_time=trade_end_time
+                )
+                buy_order_list.append(buy_order)
+
+        # 5. 卖空新的空头股票
+        for code in last_bottom_group:
+            if self.trade_exchange.is_stock_tradable(
+                stock_id=code, start_time=trade_start_time, end_time=trade_end_time, direction=OrderDir.SELL
+            ):
+                sell_price = self.trade_exchange.get_deal_price(code, trade_start_time, trade_end_time, OrderDir.SELL)
+                sell_amount = short_cash / sell_price
+                factor = self.trade_exchange.get_factor(code, trade_start_time, trade_end_time)
+                sell_amount = self.trade_exchange.round_amount_by_trade_unit(sell_amount, factor)
+                sell_order = Order(
+                    stock_id=code, amount=sell_amount * -1, direction=Order.SELL,
+                    start_time=trade_start_time, end_time=trade_end_time
+                )
+                sell_order_list.append(sell_order)
+
         return TradeDecisionWO(sell_order_list + buy_order_list, self)
 
 

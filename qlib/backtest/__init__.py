@@ -162,6 +162,7 @@ def create_account_instance(
         init_cash=init_cash,
         position_dict=position_dict,
         pos_type=pos_type,
+        # freq="60min",
         benchmark_config=(
             {}
             if benchmark is None
