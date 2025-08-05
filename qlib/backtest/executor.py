@@ -557,6 +557,7 @@ class SimulatorExecutor(BaseExecutor):
         )
 
         self.trade_type = trade_type
+        self.logger = get_module_logger("SimulatorExecutor")
 
     def _get_order_iterator(self, trade_decision: BaseTradeDecision) -> List[Order]:
         """
@@ -611,7 +612,7 @@ class SimulatorExecutor(BaseExecutor):
             self.dealt_order_amount[order.stock_id] += order.deal_amount
 
             if self.verbose:
-                print(
+                self.logger.info(
                     "[I {:%Y-%m-%d %H:%M:%S}]: {} {}, price {:.2f}, amount {}, deal_amount {}, factor {}, "
                     "value {:.2f}, cash {:.2f}.".format(
                         trade_start_time,
@@ -625,4 +626,12 @@ class SimulatorExecutor(BaseExecutor):
                         self.trade_account.get_cash(),
                     ),
                 )
+
+        # 调仓后需要进行一次 Account.portfolio_metrics 的 last_account_value 的更新
+        # 否则在计算收益率时，会使用调仓前的多空持仓净值来计算
+        if trade_decision.get_decision():
+            now_account_long_value, now_account_short_value = self.trade_account.current_position.calculate_long_short_value()
+            self.trade_account.portfolio_metrics.update_latest_long_account_value(now_account_long_value)
+            self.trade_account.portfolio_metrics.update_latest_short_account_value(now_account_short_value)
+
         return execute_result, {"trade_info": execute_result}

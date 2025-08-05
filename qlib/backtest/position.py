@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, Tuple
 
 import numpy as np
 import pandas as pd
@@ -54,7 +54,7 @@ class BasePosition:
         """
         raise NotImplementedError(f"Please implement the `check_stock` method")
 
-    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float) -> None:
+    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
         """
         Parameters
         ----------
@@ -66,6 +66,8 @@ class BasePosition:
             the trade cost of the dealing results
         trade_price : float
             the trade price of the dealing results
+        is_close_order: bool
+            if the order is close order
         """
         raise NotImplementedError(f"Please implement the `update_order` method")
 
@@ -227,6 +229,10 @@ class BasePosition:
     def __repr__(self) -> str:
         return self.__dict__.__repr__()
 
+    def calculate_long_short_value(self) -> Tuple[float, float]:
+        """计算当前多头和空头仓位的市值"""
+        raise NotImplementedError(f"Please implement the `calculate_long_short_value` method")
+
 
 class Position(BasePosition):
     """Position
@@ -339,7 +345,7 @@ class Position(BasePosition):
         self.position[stock_id]["price"] = price
         self.position[stock_id]["weight"] = 0  # update the weight in the end of the trade date
 
-    def _buy_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float) -> None:
+    def _buy_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
         trade_amount = trade_val / trade_price
         if stock_id not in self.position:
             self._init_stock(stock_id=stock_id, amount=trade_amount, price=trade_price)
@@ -349,7 +355,7 @@ class Position(BasePosition):
 
         self.position["cash"] -= trade_val + cost
 
-    def _sell_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float) -> None:
+    def _sell_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
         trade_amount = trade_val / trade_price
         if stock_id not in self.position:
             raise KeyError("{} not in current position".format(stock_id))
@@ -387,14 +393,14 @@ class Position(BasePosition):
     def check_stock(self, stock_id: str) -> bool:
         return stock_id in self.position
 
-    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float) -> None:
+    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
         # handle order, order is a order class, defined in exchange.py
         if order.direction == Order.BUY:
             # BUY
-            self._buy_stock(order.stock_id, trade_val, cost, trade_price)
+            self._buy_stock(order.stock_id, trade_val, cost, trade_price, is_close_order)
         elif order.direction == Order.SELL:
             # SELL
-            self._sell_stock(order.stock_id, trade_val, cost, trade_price)
+            self._sell_stock(order.stock_id, trade_val, cost, trade_price, is_close_order)
         else:
             raise NotImplementedError("do not support order direction {}".format(order.direction))
 
@@ -407,11 +413,38 @@ class Position(BasePosition):
     def update_stock_weight(self, stock_id: str, weight: float) -> None:
         self.position[stock_id]["weight"] = weight
 
+    def calculate_long_value(self) -> float:
+        """计算当前多头仓位的市值"""
+        long_stocks_total_value = 0
+        for code in self.get_stock_list():
+            amount = self.get_stock_amount(code)
+            if amount > 0:
+                price = self.get_stock_price(code)
+                long_stocks_total_value += amount * price
+        return long_stocks_total_value
+
+    def calculate_short_value(self) -> float:
+        """计算当前空头仓位的市值"""
+        short_stocks_total_value = 0
+        for code in self.get_stock_list():
+            amount = self.get_stock_amount(code)
+            if amount < 0:
+                price = self.get_stock_price(code)
+                short_stocks_total_value += -1 * amount * price  # 注意取正值
+        return short_stocks_total_value
+
+    def calculate_long_short_value(self) -> Tuple[float, float]:
+        """返回当前多头和空头仓位的市值"""
+        account_long_value = self.calculate_long_value()
+        account_short_value = self.calculate_short_value()
+        return account_long_value, account_short_value
+
     def calculate_stock_value(self) -> float:
         stock_list = self.get_stock_list()
         value = 0
         for stock_id in stock_list:
-            value += self.position[stock_id]["amount"] * self.position[stock_id]["price"]
+            # amount 在多头仓位中为正值，空头仓位中为负值
+            value += abs(self.position[stock_id]["amount"]) * self.position[stock_id]["price"]
         return value
 
     def calculate_value(self) -> float:
@@ -563,3 +596,57 @@ class InfPosition(BasePosition):
 
     def settle_commit(self) -> None:
         pass
+
+class LongShortPosition(Position):
+    """支持多空双向交易的持仓类"""
+    def _update_position(self, stock_id: str, trade_amount: float, trade_price: float, is_close_order: bool) -> None:
+        """处理持仓更新的通用逻辑
+        
+        Parameters
+        ----------
+        stock_id : str
+            股票ID
+        trade_amount : float
+            交易数量，买入为正，卖出为负
+        trade_price : float
+            交易价格
+        is_close_order : bool
+            是否为平仓订单
+        """
+        if stock_id not in self.position:
+            if is_close_order:
+                raise NotImplementedError(f"The order is not in position, can't to close it")
+            self._init_stock(stock_id=stock_id, amount=trade_amount, price=trade_price)
+        else:
+            current_amount = self.position[stock_id]["amount"]
+            if not is_close_order and trade_amount * current_amount < 0:
+                raise NotImplementedError(f"Orders and positions are not in the same direction")
+
+            new_amount = current_amount + trade_amount
+            if np.isclose(new_amount, 0, atol=1e-5):
+                # Positions with amount of 0 are used to calculate profits, and are deleted after calculating profits
+                self.position[stock_id]["amount"] = 0
+            else:
+                self.position[stock_id]["amount"] += trade_amount
+    
+    def _buy_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
+        trade_amount = trade_val / trade_price
+        self._update_position(stock_id, trade_amount, trade_price, is_close_order)
+        
+        # TODO 1. Not support _settle_type 2. It is necessary to support leveraged trading to reduce margin occupation
+        # trade_val > 0
+        if is_close_order:
+            self.position["cash"] += trade_val - cost # Close orders release margin occupancy
+        else:
+            self.position["cash"] += -1 * trade_val - cost # Open orders take up margin
+
+    def _sell_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
+        trade_amount = trade_val / trade_price
+        self._update_position(stock_id, trade_amount, trade_price, is_close_order)
+        
+        # TODO ditto
+        # trade_val < 0
+        if is_close_order:
+            self.position["cash"] += -1 * trade_val - cost # Close orders release margin occupancy
+        else:
+            self.position["cash"] += trade_val - cost # Open orders take up margin

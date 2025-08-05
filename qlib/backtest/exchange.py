@@ -424,6 +424,7 @@ class Exchange:
         trade_account: Account | None = None,
         position: BasePosition | None = None,
         dealt_order_amount: Dict[str, float] = defaultdict(float),
+        is_close_order: bool = False,
     ) -> Tuple[float, float, float]:
         """
         Deal order when the actual transaction
@@ -432,6 +433,7 @@ class Exchange:
         :param trade_account: Trade account to be updated after dealing the order.
         :param position: position to be updated after dealing the order.
         :param dealt_order_amount: the dealt order amount dict with the format of {stock_id: float}
+        :param is_close_order: if the order is close order, only be used to update LongShortPosition.
         :return: trade_val, trade_cost, trade_price
         """
         # check order first.
@@ -449,16 +451,17 @@ class Exchange:
             order,
             trade_account.current_position if trade_account else position,
             dealt_order_amount,
+            is_close_order
         )
-        if trade_val > 1e-5:
+        if abs(trade_val) > 1e-5:
             # If the order can only be deal 0 value. Nothing to be updated
             # Otherwise, it will result in
             # 1) some stock with 0 value in the position
             # 2) `trade_unit` of trade_cost will be lost in user account
             if trade_account:
-                trade_account.update_order(order=order, trade_val=trade_val, cost=trade_cost, trade_price=trade_price)
+                trade_account.update_order(order=order, trade_val=trade_val, cost=trade_cost, trade_price=trade_price, is_close_order=is_close_order)
             elif position:
-                position.update_order(order=order, trade_val=trade_val, cost=trade_cost, trade_price=trade_price)
+                position.update_order(order=order, trade_val=trade_val, cost=trade_cost, trade_price=trade_price, is_close_order=is_close_order)
 
         return trade_val, trade_cost, trade_price
 
@@ -861,6 +864,7 @@ class Exchange:
         order: Order,
         position: Optional[BasePosition],
         dealt_order_amount: dict,
+        is_close_order: bool,
     ) -> Tuple[float, float, float]:
         """
         Calculation of trade info
@@ -884,68 +888,49 @@ class Exchange:
         self._clip_amount_by_volume(order, dealt_order_amount)
 
         # TODO: the adjusted cost ratio can be overestimated as deal_amount will be clipped in the next steps
-        trade_val = order.deal_amount * trade_price
         if not total_trade_val or np.isnan(total_trade_val):
             # TODO: assert trade_val == 0, f"trade_val != 0, total_trade_val: {total_trade_val}; order info: {order}"
             adj_cost_ratio = self.impact_cost
         else:
-            adj_cost_ratio = self.impact_cost * (trade_val / total_trade_val) ** 2
+            adj_cost_ratio = self.impact_cost # Not consider the impact of trade_val
+            # adj_cost_ratio = self.impact_cost * (trade_val / total_trade_val) ** 2
 
-        if order.direction == Order.SELL:
-            cost_ratio = self.close_cost + adj_cost_ratio
-            # sell
-            # if we don't know current position, we choose to sell all
-            # Otherwise, we clip the amount based on current position
-            if position is not None:
-                current_amount = (
-                    position.get_stock_amount(order.stock_id) if position.check_stock(order.stock_id) else 0
+        # buy: order.deal_amount > 0, sell: order.deal_amount < 0
+        abs_trade_val = abs(order.deal_amount) * trade_price
+        cost_ratio = self.close_cost + adj_cost_ratio # only use close_cost
+        cash = position.get_cash()
+        trade_cost = max(abs_trade_val * cost_ratio, self.min_cost)
+        # if we don't know current position, we choose to sell/buy all
+        # Otherwise, we clip the amount based on current position
+        if position is not None:
+            current_amount = (
+                position.get_stock_amount(order.stock_id) if position.check_stock(order.stock_id) else 0
+            )
+            if not np.isclose(order.deal_amount, current_amount):
+                # when not selling last stock. rounding is necessary
+                order.deal_amount = self.round_amount_by_trade_unit(
+                    order.deal_amount,
+                    order.factor,
                 )
-                if not np.isclose(order.deal_amount, current_amount):
-                    # when not selling last stock. rounding is necessary
-                    order.deal_amount = self.round_amount_by_trade_unit(
-                        min(current_amount, order.deal_amount),
-                        order.factor,
-                    )
-
-                # in case of negative value of cash
-                if position.get_cash() + order.deal_amount * trade_price < max(
-                    order.deal_amount * trade_price * cost_ratio,
-                    self.min_cost,
-                ):
-                    order.deal_amount = 0
-                    self.logger.debug(f"Order clipped due to cash limitation: {order}")
-
-        elif order.direction == Order.BUY:
-            cost_ratio = self.open_cost + adj_cost_ratio
-            # buy
-            if position is not None:
-                cash = position.get_cash()
-                trade_val = order.deal_amount * trade_price
-                if cash < max(trade_val * cost_ratio, self.min_cost):
-                    # cash cannot cover cost
-                    order.deal_amount = 0
-                    self.logger.debug(f"Order clipped due to cost higher than cash: {order}")
-                elif cash < trade_val + max(trade_val * cost_ratio, self.min_cost):
-                    # The money is not enough
-                    max_buy_amount = self._get_buy_amount_by_cash_limit(trade_price, cash, cost_ratio)
-                    order.deal_amount = self.round_amount_by_trade_unit(
-                        min(max_buy_amount, order.deal_amount),
-                        order.factor,
-                    )
-                    self.logger.debug(f"Order clipped due to cash limitation: {order}")
-                else:
-                    # The money is enough
-                    order.deal_amount = self.round_amount_by_trade_unit(order.deal_amount, order.factor)
             else:
-                # Unknown amount of money. Just round the amount
-                order.deal_amount = self.round_amount_by_trade_unit(order.deal_amount, order.factor)
-
+                # when selling last stock. no need to round
+                order.deal_amount = current_amount
         else:
-            raise NotImplementedError("order direction {} error".format(order.direction))
+            # Unknown amount of money. Just round the amount
+            order.deal_amount = self.round_amount_by_trade_unit(order.deal_amount, order.factor)
+
+        if not is_close_order:
+            if cash < trade_cost + abs(abs_trade_val):
+                order.deal_amount = 0
+                self.logger.error(f"Order clipped due to insufficient cash for open order: {order}")
+        else:
+            # 平仓：只需支付交易成本
+            if cash < trade_cost:
+                order.deal_amount = 0
+                self.logger.error(f"Order clipped due to insufficient cash for open order: {order}")
 
         trade_val = order.deal_amount * trade_price
-        trade_cost = max(trade_val * cost_ratio, self.min_cost)
-        if trade_val <= 1e-5:
+        if abs(trade_val) <= 1e-5:
             # if dealing is not successful, the trade_cost should be zero.
             trade_cost = 0
         return trade_price, trade_val, trade_cost

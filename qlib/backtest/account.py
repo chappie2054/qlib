@@ -183,7 +183,7 @@ class Account:
     def _update_state_from_order(self, order: Order, trade_val: float, cost: float, trade_price: float) -> None:
         if self.is_port_metr_enabled():
             # update turnover
-            self.accum_info.add_turnover(trade_val)
+            self.accum_info.add_turnover(abs(trade_val))
             # update cost
             self.accum_info.add_cost(cost)
 
@@ -191,16 +191,20 @@ class Account:
             trade_amount = trade_val / trade_price
             if order.direction == Order.SELL:  # 0 for sell
                 # when sell stock, get profit from price change
+                # 这里的收益率计算的是 T_-1 的 `close` 和 T 的 `open` 之间的收益率，且只对调仓时有效，非调仓时的收益率
+                # 调用 self.update_portfolio_metrics 记录
                 profit = trade_val - self.current_position.get_stock_price(order.stock_id) * trade_amount
                 self.accum_info.add_return_value(profit)  # note here do not consider cost
 
             elif order.direction == Order.BUY:  # 1 for buy
                 # when buy stock, we get return for the rtn computing method
                 # profit in buy order is to make rtn is consistent with earning at the end of bar
+                # 同上
                 profit = self.current_position.get_stock_price(order.stock_id) * trade_amount - trade_val
                 self.accum_info.add_return_value(profit)  # note here do not consider cost
 
-    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float) -> None:
+    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
+        # This function only support LongShortPosition !!!!!!!
         if self.current_position.skip_update():
             # TODO: supporting polymorphism for account
             # updating order for infinite position is meaningless
@@ -210,17 +214,12 @@ class Account:
         # then update current position
         # if stock is bought, there is no stock in current position, update current, then update account
         # The cost will be subtracted from the cash at last. So the trading logic can ignore the cost calculation
-        if order.direction == Order.SELL:
-            # sell stock
-            self._update_state_from_order(order, trade_val, cost, trade_price)
-            # update current position
-            # for may sell all of stock_id
-            self.current_position.update_order(order, trade_val, cost, trade_price)
-        else:
-            # buy stock
-            # deal order, then update state
-            self.current_position.update_order(order, trade_val, cost, trade_price)
-            self._update_state_from_order(order, trade_val, cost, trade_price)
+        # TODO 这里破坏了原来的逻辑，需要改为继承 Account 的 LongShortAccount 并重构该方法的方式！！！！！
+        self.current_position.update_order(order, trade_val, cost, trade_price, is_close_order)
+        self._update_state_from_order(order, trade_val, cost, trade_price)
+
+        if self.current_position.get_stock_amount(order.stock_id) == 0:
+            del self.current_position.position[order.stock_id]
 
     def update_current_position(
         self,
@@ -250,27 +249,39 @@ class Account:
     def update_portfolio_metrics(self, trade_start_time: pd.Timestamp, trade_end_time: pd.Timestamp) -> None:
         """update portfolio_metrics"""
         # calculate earning
-        # account_value - last_account_value
+        # now_earning = (last_short_account_value - account_short_value) + (account_long_value - last_long_account_value)
+        # return_rate = now_earning / last_account_value
         # for the first trade date, account_value - init_cash
         # self.portfolio_metrics.is_empty() to judge is_first_trade_date
-        # get last_account_value, last_total_cost, last_total_turnover
+        # get last_account_value, last_total_cost, last_total_turnover, last_short_account_value, last_long_account_value
         assert self.portfolio_metrics is not None
 
         if self.portfolio_metrics.is_empty():
             last_account_value = self.init_cash
             last_total_cost = 0
             last_total_turnover = 0
+            last_short_account_value = 0
+            last_long_account_value = 0
         else:
             last_account_value = self.portfolio_metrics.get_latest_account_value()
             last_total_cost = self.portfolio_metrics.get_latest_total_cost()
             last_total_turnover = self.portfolio_metrics.get_latest_total_turnover()
+            last_short_account_value = self.portfolio_metrics.get_latest_short_account_value()
+            last_long_account_value = self.portfolio_metrics.get_latest_long_account_value()
 
+        # 1. 在调仓操作后会立刻进行一次 last long/short account value 的更新
+        # 2. 将多头和空头的仓位净值收益分开计算和存储
         # get now_account_value, now_stock_value, now_earning, now_cost, now_turnover
-        now_account_value = self.current_position.calculate_value()
-        now_stock_value = self.current_position.calculate_stock_value()
-        now_earning = now_account_value - last_account_value
+        now_account_long_value, now_account_short_value = self.current_position.calculate_long_short_value()
+        now_earning = (last_short_account_value - now_account_short_value) + (now_account_long_value - last_long_account_value)
         now_cost = self.accum_info.get_cost - last_total_cost
+        now_account_value = last_account_value + now_earning - now_cost
+        now_stock_value = now_account_long_value + now_account_short_value
         now_turnover = self.accum_info.get_turnover - last_total_turnover
+
+        # 当持仓市值增加的时候，那么所占用的保证金也会增加，可用现金减少，反之，当持仓市值减少的时候，那么所占用的保证金也会减少，可用现金增加
+        self.current_position.position["cash"] -= ((now_account_long_value + now_account_short_value) -
+                                                   (last_short_account_value + last_long_account_value))
 
         # update portfolio_metrics for today
         # judge whether the trading is begin.
@@ -279,6 +290,8 @@ class Account:
             trade_start_time=trade_start_time,
             trade_end_time=trade_end_time,
             account_value=now_account_value,
+            long_account_value=now_account_long_value,
+            short_account_value=now_account_short_value,
             cash=self.current_position.position["cash"],
             return_rate=(now_earning + now_cost) / last_account_value,
             # here use earning to calculate return, position's view, earning consider cost, true return
