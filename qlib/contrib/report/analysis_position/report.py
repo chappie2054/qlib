@@ -43,6 +43,8 @@ def _calculate_report_data(df: pd.DataFrame) -> pd.DataFrame:
 
     report_df = pd.DataFrame()
 
+    report_df["account"] = (df["account"] / df["account"][0])
+    report_df["account_mdd"] = _calculate_mdd(report_df["account"])
     report_df["cum_bench"] = df["bench"].cumsum()
     report_df["cum_return_wo_cost"] = df["return"].cumsum()
     report_df["cum_return_w_cost"] = (df["return"] - df["cost"]).cumsum()
@@ -79,26 +81,32 @@ def _report_figure(df: pd.DataFrame) -> [list, tuple]:
 
     index_name = report_df.index.name
     _temp_df = report_df.reset_index()
-    _temp_df.loc[-1] = 0
-    _temp_df = _temp_df.shift(1)
-    _temp_df.loc[0, index_name] = "T0"
+
+    # 添加 T0 行，只对 account 赋值为 1，其它保持为 NaN
+    t0_row = {col: (1.0 if col == "account" else 0) for col in _temp_df.columns}
+    t0_row[index_name] = "T0"
+
+    # 插入 T0 行
+    _temp_df.loc[-1] = t0_row
+    _temp_df = _temp_df.sort_index()  # 保证 T0 行在最前
     _temp_df.set_index(index_name, inplace=True)
-    _temp_df.iloc[0] = 0
+
     report_df = _temp_df
 
     # Create figure
-    _default_kind_map = dict(kind="ScatterGraph", kwargs={"mode": "lines+markers"})
-    _temp_fill_args = {"fill": "tozeroy", "mode": "lines+markers"}
+    _default_kind_map = dict(kind="ScatterGraph", kwargs={"mode": "lines"})
+    _temp_fill_args = {"fill": "tozeroy", "mode": "lines"}
     _column_row_col_dict = [
-        ("cum_bench", dict(row=1, col=1)),
-        ("cum_return_wo_cost", dict(row=1, col=1)),
-        ("cum_return_w_cost", dict(row=1, col=1)),
-        ("return_wo_mdd", dict(row=2, col=1, graph_kwargs=_temp_fill_args)),
-        ("return_w_cost_mdd", dict(row=3, col=1, graph_kwargs=_temp_fill_args)),
-        ("cum_ex_return_wo_cost", dict(row=4, col=1)),
-        ("cum_ex_return_w_cost", dict(row=4, col=1)),
-        ("turnover", dict(row=5, col=1)),
-        ("cum_ex_return_w_cost_mdd", dict(row=6, col=1, graph_kwargs=_temp_fill_args)),
+        ("cum_bench", dict(row=4, col=1)),
+        ("cum_return_wo_cost", dict(row=4, col=1)),
+        ("cum_return_w_cost", dict(row=4, col=1)),
+        ("return_wo_mdd", dict(row=5, col=1, graph_kwargs=_temp_fill_args)),
+        ("return_w_cost_mdd", dict(row=6, col=1, graph_kwargs=_temp_fill_args)),
+        ("account", dict(row=1, col=1)),
+        # ("cum_ex_return_wo_cost", dict(row=4, col=1)),
+        # ("cum_ex_return_w_cost", dict(row=4, col=1)),
+        ("turnover", dict(row=3, col=1)),
+        ("account_mdd", dict(row=2, col=1, graph_kwargs=_temp_fill_args)),
         ("cum_ex_return_wo_cost_mdd", dict(row=7, col=1, graph_kwargs=_temp_fill_args)),
     ]
 
