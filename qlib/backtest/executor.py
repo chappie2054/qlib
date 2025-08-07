@@ -558,6 +558,7 @@ class SimulatorExecutor(BaseExecutor):
 
         self.trade_type = trade_type
         self.logger = get_module_logger("SimulatorExecutor")
+        self.leverage = None
 
     def _get_order_iterator(self, trade_decision: BaseTradeDecision) -> List[Order]:
         """
@@ -592,6 +593,9 @@ class SimulatorExecutor(BaseExecutor):
         trade_start_time, _ = self.trade_calendar.get_step_time()
         execute_result: list = []
 
+        if self.leverage is None:
+            self.leverage = self.common_infra.get('trade_account').get_leverage()
+
         for order in self._get_order_iterator(trade_decision):
             # Each time we move into a new date, clear `self.dealt_order_amount` since it only maintains intraday
             # information.
@@ -606,6 +610,7 @@ class SimulatorExecutor(BaseExecutor):
                 order,
                 trade_account=self.trade_account,
                 dealt_order_amount=self.dealt_order_amount,
+                leverage=self.leverage,
             )
             execute_result.append((order, trade_val, trade_cost, trade_price))
 

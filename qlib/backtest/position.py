@@ -54,7 +54,7 @@ class BasePosition:
         """
         raise NotImplementedError(f"Please implement the `check_stock` method")
 
-    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
+    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
         """
         Parameters
         ----------
@@ -68,6 +68,8 @@ class BasePosition:
             the trade price of the dealing results
         is_close_order: bool
             if the order is close order
+        leverage: int
+            the leverage of the order
         """
         raise NotImplementedError(f"Please implement the `update_order` method")
 
@@ -345,7 +347,7 @@ class Position(BasePosition):
         self.position[stock_id]["price"] = price
         self.position[stock_id]["weight"] = 0  # update the weight in the end of the trade date
 
-    def _buy_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
+    def _buy_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
         trade_amount = trade_val / trade_price
         if stock_id not in self.position:
             self._init_stock(stock_id=stock_id, amount=trade_amount, price=trade_price)
@@ -355,7 +357,7 @@ class Position(BasePosition):
 
         self.position["cash"] -= trade_val + cost
 
-    def _sell_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
+    def _sell_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
         trade_amount = trade_val / trade_price
         if stock_id not in self.position:
             raise KeyError("{} not in current position".format(stock_id))
@@ -393,14 +395,14 @@ class Position(BasePosition):
     def check_stock(self, stock_id: str) -> bool:
         return stock_id in self.position
 
-    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
+    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
         # handle order, order is a order class, defined in exchange.py
         if order.direction == Order.BUY:
             # BUY
-            self._buy_stock(order.stock_id, trade_val, cost, trade_price, is_close_order)
+            self._buy_stock(order.stock_id, trade_val, cost, trade_price, is_close_order, leverage)
         elif order.direction == Order.SELL:
             # SELL
-            self._sell_stock(order.stock_id, trade_val, cost, trade_price, is_close_order)
+            self._sell_stock(order.stock_id, trade_val, cost, trade_price, is_close_order, leverage)
         else:
             raise NotImplementedError("do not support order direction {}".format(order.direction))
 
@@ -629,24 +631,24 @@ class LongShortPosition(Position):
             else:
                 self.position[stock_id]["amount"] += trade_amount
     
-    def _buy_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
+    def _buy_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
         trade_amount = trade_val / trade_price
         self._update_position(stock_id, trade_amount, trade_price, is_close_order)
         
         # TODO 1. Not support _settle_type 2. It is necessary to support leveraged trading to reduce margin occupation
         # trade_val > 0
         if is_close_order:
-            self.position["cash"] += trade_val - cost # Close orders release margin occupancy
+            self.position["cash"] += trade_val / leverage - cost # Close orders release margin occupancy
         else:
-            self.position["cash"] += -1 * trade_val - cost # Open orders take up margin
+            self.position["cash"] += -1 * trade_val / leverage - cost # Open orders take up margin
 
-    def _sell_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
+    def _sell_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
         trade_amount = trade_val / trade_price
         self._update_position(stock_id, trade_amount, trade_price, is_close_order)
         
         # TODO ditto
         # trade_val < 0
         if is_close_order:
-            self.position["cash"] += -1 * trade_val - cost # Close orders release margin occupancy
+            self.position["cash"] += -1 * trade_val / leverage - cost # Close orders release margin occupancy
         else:
-            self.position["cash"] += trade_val - cost # Open orders take up margin
+            self.position["cash"] += trade_val / leverage - cost # Open orders take up margin
