@@ -84,6 +84,7 @@ class Account:
         benchmark_config: dict = {},
         pos_type: str = "Position",
         port_metr_enabled: bool = True,
+        leverage: int = 1,
     ) -> None:
         """the trade account of backtest.
 
@@ -101,12 +102,15 @@ class Account:
             initial stocks with parameters amount and price,
             if there is no price key in the dict of stocks, it will be filled by _fill_stock_value.
             by default {}.
+        leverage : int, optional
+            the leverage of the account, by default 1
         """
 
         self._pos_type = pos_type
         self._port_metr_enabled = port_metr_enabled
         self.benchmark_config: dict = {}  # avoid no attribute error
         self.init_vars(init_cash, position_dict, freq, benchmark_config)
+        self.leverage = leverage
 
     def init_vars(self, init_cash: float, position_dict: dict, freq: str, benchmark_config: dict) -> None:
         # 1) the following variables are shared by multiple layers
@@ -180,6 +184,9 @@ class Account:
     def get_cash(self) -> float:
         return self.current_position.get_cash()
 
+    def get_leverage(self) -> int:
+        return self.leverage
+
     def _update_state_from_order(self, order: Order, trade_val: float, cost: float, trade_price: float) -> None:
         if self.is_port_metr_enabled():
             # update turnover
@@ -203,7 +210,7 @@ class Account:
                 profit = self.current_position.get_stock_price(order.stock_id) * trade_amount - trade_val
                 self.accum_info.add_return_value(profit)  # note here do not consider cost
 
-    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float, is_close_order: bool) -> None:
+    def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
         # This function only support LongShortPosition !!!!!!!
         if self.current_position.skip_update():
             # TODO: supporting polymorphism for account
@@ -215,7 +222,7 @@ class Account:
         # if stock is bought, there is no stock in current position, update current, then update account
         # The cost will be subtracted from the cash at last. So the trading logic can ignore the cost calculation
         # TODO 这里破坏了原来的逻辑，需要改为继承 Account 的 LongShortAccount 并重构该方法的方式！！！！！
-        self.current_position.update_order(order, trade_val, cost, trade_price, is_close_order)
+        self.current_position.update_order(order, trade_val, cost, trade_price, is_close_order, leverage)
         self._update_state_from_order(order, trade_val, cost, trade_price)
 
         if self.current_position.get_stock_amount(order.stock_id) == 0:
@@ -281,7 +288,7 @@ class Account:
 
         # 当持仓市值增加的时候，那么所占用的保证金也会增加，可用现金减少，反之，当持仓市值减少的时候，那么所占用的保证金也会减少，可用现金增加
         self.current_position.position["cash"] -= ((now_account_long_value + now_account_short_value) -
-                                                   (last_short_account_value + last_long_account_value))
+                                                   (last_short_account_value + last_long_account_value)) / self.leverage
 
         # update portfolio_metrics for today
         # judge whether the trading is begin.

@@ -116,6 +116,7 @@ def create_account_instance(
     benchmark: Optional[str],
     account: Union[float, int, dict],
     pos_type: str = "Position",
+    leverage: int = 1,
 ) -> Account:
     """
     # TODO: is very strange pass benchmark_config in the account (maybe for report)
@@ -148,6 +149,8 @@ def create_account_instance(
             ...
     pos_type: str
         Postion type.
+    leverage: int
+        Leverage.
     """
     if isinstance(account, (int, float)):
         init_cash = account
@@ -162,6 +165,7 @@ def create_account_instance(
         init_cash=init_cash,
         position_dict=position_dict,
         pos_type=pos_type,
+        leverage=leverage,
         # freq="60min",
         benchmark_config=(
             {}
@@ -184,6 +188,7 @@ def get_strategy_executor(
     account: Union[float, int, dict] = 1e9,
     exchange_kwargs: dict = {},
     pos_type: str = "Position",
+    leverage: int = 1,
 ) -> Tuple[BaseStrategy, BaseExecutor]:
     # NOTE:
     # - for avoiding recursive import
@@ -197,6 +202,7 @@ def get_strategy_executor(
         benchmark=benchmark,
         account=account,
         pos_type=pos_type,
+        leverage=leverage,
     )
 
     exchange_kwargs = copy.copy(exchange_kwargs)
@@ -224,6 +230,7 @@ def backtest(
     account: Union[float, int, dict] = 1e9,
     exchange_kwargs: dict = {},
     pos_type: str = "Position",
+    leverage: int = 1,
 ) -> Tuple[PORT_METRIC, INDICATOR_METRIC]:
     """initialize the strategy and executor, then backtest function for the interaction of the outermost strategy and
     executor in the nested decision execution
@@ -254,6 +261,8 @@ def backtest(
         the kwargs for initializing Exchange
     pos_type : str
         the type of Position.
+    leverage : int
+        the leverage of the account.
 
     Returns
     -------
@@ -273,6 +282,7 @@ def backtest(
         account,
         exchange_kwargs,
         pos_type=pos_type,
+        leverage=leverage,
     )
     return backtest_loop(start_time, end_time, trade_strategy, trade_executor)
 

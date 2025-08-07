@@ -328,7 +328,7 @@ class LongShortTopkDropoutStrategy(BaseSignalStrategy):
         pred_score = self.signal.get_signal(start_time=pred_start_time, end_time=pred_end_time)
 
         # 检查pred_start_time是否不是08:00:00
-        if pred_start_time.strftime("%H:%M:%S") != ("00:00:00" if self.trade_calendar.freq == "day" else "08:00:00"):
+        if pred_start_time.strftime("%H:%M:%S") != ("00:00:00" if self.trade_calendar.freq == "day" else "07:00:00"):
             return TradeDecisionWO([], self)
 
         self.hold_count += 1
@@ -375,7 +375,9 @@ class LongShortTopkDropoutStrategy(BaseSignalStrategy):
                         start_time=trade_start_time, end_time=trade_end_time
                     )
                     if self.trade_exchange.check_order(sell_order):
-                        trade_val, trade_cost, _ = self.trade_exchange.deal_order(sell_order, trade_account=trade_account, is_close_order=True)
+                        trade_val, trade_cost, _ = self.trade_exchange.deal_order(sell_order,
+                                                    trade_account=trade_account, is_close_order=True,
+                                                    leverage=trade_account.get_leverage())
             else:
                 last_top_group.remove(code)
 
@@ -392,16 +394,18 @@ class LongShortTopkDropoutStrategy(BaseSignalStrategy):
                         start_time=trade_start_time, end_time=trade_end_time
                     )
                     if self.trade_exchange.check_order(buy_order):
-                        trade_val, trade_cost, _ = self.trade_exchange.deal_order(buy_order, trade_account=trade_account, is_close_order=True)
+                        trade_val, trade_cost, _ = self.trade_exchange.deal_order(buy_order,
+                                                    trade_account=trade_account, is_close_order=True,
+                                                    leverage=trade_account.get_leverage())
             else:
                 last_bottom_group.remove(code)
 
         # 3 计算资金分配
         # - 依据多空风险限制和当前多空市值占比计算多空剩余可支配现金
         long_stocks_total_value, short_stocks_total_value = trade_account.current_position.calculate_long_short_value()
-        total_values = long_stocks_total_value + short_stocks_total_value + trade_account.current_position.position['cash']
-        long_cash = (total_values * self.long_risk_degree - long_stocks_total_value)/ len(last_top_group) if last_top_group else 0
-        short_cash = (total_values * self.short_risk_degree - short_stocks_total_value)/ len(last_bottom_group) if last_bottom_group else 0
+        last_account_value = trade_account.portfolio_metrics.get_latest_account_value()
+        long_cash = (last_account_value * self.long_risk_degree - long_stocks_total_value)/ len(last_top_group) if last_top_group else 0
+        short_cash = (last_account_value * self.short_risk_degree - short_stocks_total_value)/ len(last_bottom_group) if last_bottom_group else 0
 
         # 4. 买入新的多头股票
         for code in last_top_group:

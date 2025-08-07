@@ -425,6 +425,7 @@ class Exchange:
         position: BasePosition | None = None,
         dealt_order_amount: Dict[str, float] = defaultdict(float),
         is_close_order: bool = False,
+        leverage: int = 1,
     ) -> Tuple[float, float, float]:
         """
         Deal order when the actual transaction
@@ -434,6 +435,7 @@ class Exchange:
         :param position: position to be updated after dealing the order.
         :param dealt_order_amount: the dealt order amount dict with the format of {stock_id: float}
         :param is_close_order: if the order is close order, only be used to update LongShortPosition.
+        :param leverage: the leverage of the order
         :return: trade_val, trade_cost, trade_price
         """
         # check order first.
@@ -459,9 +461,11 @@ class Exchange:
             # 1) some stock with 0 value in the position
             # 2) `trade_unit` of trade_cost will be lost in user account
             if trade_account:
-                trade_account.update_order(order=order, trade_val=trade_val, cost=trade_cost, trade_price=trade_price, is_close_order=is_close_order)
+                trade_account.update_order(order=order, trade_val=trade_val, cost=trade_cost, trade_price=trade_price,
+                                           is_close_order=is_close_order, leverage=leverage)
             elif position:
-                position.update_order(order=order, trade_val=trade_val, cost=trade_cost, trade_price=trade_price, is_close_order=is_close_order)
+                position.update_order(order=order, trade_val=trade_val, cost=trade_cost, trade_price=trade_price,
+                                      is_close_order=is_close_order, leverage=leverage)
 
         return trade_val, trade_cost, trade_price
 
