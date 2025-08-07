@@ -73,12 +73,14 @@ def _calculate_group_returns(pred_label: pd.DataFrame, group_num: int, factor_di
         monthly_win_rate.index = monthly_win_rate.index.astype(str)  # 或 to_timestamp()
 
         # Autocorrelation of factor ranks
-        factor_rank_autocorr = (
-            df.loc[df.index.get_level_values('datetime').isin(group_returns.index)]
-            .groupby(level='datetime')['factor_rank']
-            .apply(lambda x: x.autocorr(lag=1))
-        )
-        factor_rank_autocorr.name = 'factor_rank_autocorr'
+        valid_dates = sorted(set(df.index.get_level_values('datetime')) & set(group_returns.index))
+        factor_matrix = df['factor_rank'].unstack(level='datetime')[valid_dates]
+        factor_matrix = factor_matrix.sort_index()
+        autocorrs = [
+            factor_matrix[valid_dates[i]].corr(factor_matrix[valid_dates[i - 1]])
+            for i in range(1, len(valid_dates))
+        ]
+        factor_rank_autocorr = pd.Series(autocorrs, index=valid_dates[1:], name='factor_rank_autocorr')
 
         # TODO 实现换手率逻辑
         # Calculate turnover based on long-short group instrument changes
@@ -148,7 +150,7 @@ def _compute_metrics(returns: pd.Series) -> pd.DataFrame:
 
 
 def factors_group_test_graph(pred_label: pd.DataFrame, group_num: int = 10, factor_direction: int = 1,
-                             show_notebook: bool = True, **kwargs) -> Union[DataFrame, list[DataFrame]]:
+                             show_notebook: bool = True, label_period: int = 72, **kwargs) -> Union[DataFrame, list[DataFrame]]:
     """
     Generate visualizations and metrics for factor group testing.
     
@@ -157,6 +159,7 @@ def factors_group_test_graph(pred_label: pd.DataFrame, group_num: int = 10, fact
         group_num (int): Number of groups to split factors into. Default 10.
         factor_direction (int): -1 or 1, indicating factor direction. Default 1.
         show_notebook (bool): Whether to display in notebook. Default True.
+        label_period (int): Label period in hours. Default 72.
     
     Returns:
         list or tuple: Plotly figures if show_notebook is False.
@@ -166,7 +169,7 @@ def factors_group_test_graph(pred_label: pd.DataFrame, group_num: int = 10, fact
     assert group_num >= 2, "group_num must be at least 2."
     
     # Calculate group returns and metrics
-    results = _calculate_group_returns(pred_label, group_num, factor_direction)
+    results = _calculate_group_returns(pred_label, group_num, factor_direction, label_period)
     figures = []
     
     # Generate visualizations for each label column
