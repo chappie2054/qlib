@@ -49,9 +49,10 @@ def risk_analysis(r, N: int = None, freq: str = "day", mode: Literal["sum", "pro
     def cal_risk_analysis_scaler(freq):
         _count, _freq = Freq.parse(freq)
         _freq_scaler = {
-            Freq.NORM_FREQ_MINUTE: 240 * 238,
-            Freq.NORM_FREQ_DAY: 238,
-            Freq.NORM_FREQ_WEEK: 50,
+            # 加密货币市场为全年交易
+            Freq.NORM_FREQ_MINUTE: 1440 * 365,
+            Freq.NORM_FREQ_DAY: 365,
+            Freq.NORM_FREQ_WEEK: 52,
             Freq.NORM_FREQ_MONTH: 12,
         }
         return _freq_scaler[_freq] / _count
