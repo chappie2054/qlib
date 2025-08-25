@@ -18,7 +18,7 @@ from qlib.backtest.signal import Signal, create_signal_from
 from qlib.backtest.decision import Order, OrderDir, TradeDecisionWO
 from qlib.log import get_module_logger
 from qlib.utils import get_pre_trading_date, load_dataset
-from qlib.contrib.strategy.order_generator import OrderGenerator, OrderGenWOInteract
+from qlib.contrib.strategy.order_generator import OrderGenerator, OrderGenWOInteract, LongShortOrderGenWOInteract
 from qlib.contrib.strategy.optimizer import EnhancedIndexingOptimizer
 
 
@@ -665,3 +665,154 @@ class EnhancedIndexingStrategy(WeightStrategyBase):
             self.logger.info("total holding weight: {:.6f}".format(weight.sum()))
 
         return target_weight_position
+
+class LongShortWeightStrategy(WeightStrategyBase):
+    """
+    多空分组权重策略（Long-Short Grouped Weighting Strategy）
+
+    本策略基于每个截面的因子得分，对股票进行排序，构建首尾两个分组：
+    - 得分最高的一部分构成多头股票池
+    - 得分最低的一部分构成空头股票池
+
+    在构建多空组合的基础上，执行以下权重分配逻辑：
+
+    权重分配规则：
+    1. 非多空股票池中的股票权重设为 0；
+    2. 多空股票池中的股票按绝对等权配置：
+       - 每只股票的绝对权重为：1 / 股票池大小
+       - 多头股票权重大于 0，空头股票权重小于 0；
+    3. 多头股票组合的总权重为 +0.5，空头股票组合的总权重为 -0.5；
+    4. 整体组合权重总和为 0，实现市值中性或风险中性配置；
+
+    订单生成：
+    1. 每个交易日，根据因子得分和权重分配规则，生成目标权重组合；
+    2. 利用订单生成器，根据目标权重组合和当前实际持仓权重，生成订单列表；
+    3. 返回订单列表，提交至交易系统，执行交易操作。
+
+    """
+
+    def __init__(
+        self,
+        *,
+        percentageByGroup, # 多空分组百分比
+        hold_thresh=1, # 最低持有期
+        rebalancing_steps=3, # 调仓周期
+        only_tradable=False,
+        forbid_all_trade_at_limit=False,
+        long_short_total_risk_degree=1,
+        **kwargs,
+    ):
+        kwargs['risk_degree'] = long_short_total_risk_degree
+        kwargs['order_generator_cls_or_obj'] = LongShortOrderGenWOInteract
+        super().__init__(**kwargs)
+
+        self.logger = get_module_logger("LongShortWeightStrategy")
+        self.verbose = None
+        self.percentageByGroup = percentageByGroup
+        self.hold_thresh = hold_thresh
+        self.rebalancing_steps = rebalancing_steps
+        self.only_tradable = only_tradable
+        self.forbid_all_trade_at_limit = forbid_all_trade_at_limit
+        self.long_short_total_risk_degree = long_short_total_risk_degree  # 总风险敞口
+        self.rebalancing_every_day = True if rebalancing_steps == 1 else False
+
+        self.hold_count = 0
+
+    def generate_target_weight_position(self, score, current, trade_start_time, trade_end_time):
+        """
+        生成目标权重组合
+        :param score: 因子得分
+        :param current: 当前持仓
+        :param trade_start_time: 交易开始时间
+        :param trade_end_time: 交易结束时间
+        :return: 目标权重组合
+        """
+
+        trade_date = trade_start_time
+
+        # TODO 添加黑名单交易池
+        # mask force close
+        # blacklist = []
+        # mask_force_close = np.array([stock in blacklist for stock in universe], dtype=bool)
+
+        # pre_date = get_pre_trading_date(trade_date, future=True)
+        # tradable = D.features(D.instruments("all"), ["$volume"], start_time=pre_date, end_time=pre_date).squeeze()
+        # tradable.index = tradable.index.droplevel(level="datetime")
+        # tradable = tradable.reindex(score.index.tolist()).gt(0)
+        # score_tradable = score[tradable]
+        # universe = score_tradable.index.tolist()
+
+        universe = score.index.tolist()
+
+        # TODO optimize
+
+        # score_tradable = score_tradable.squeeze()
+        # score_sorted = score_tradable.sort_values(ascending=False)
+        score = score.squeeze()
+        score_sorted = score.sort_values(ascending=False)
+        n_total = len(score_sorted)
+        n_group = max(int(n_total / self.percentageByGroup), 1)  # 至少一个
+        long_stocks = score_sorted.iloc[:n_group].index.tolist()
+        short_stocks = score_sorted.iloc[-n_group:].index.tolist()
+        long_short_weight = np.zeros(len(universe))
+        universe_index = {stock: i for i, stock in enumerate(universe)}
+        weight = self.long_short_total_risk_degree * 0.5 / n_group
+
+        for stock in long_stocks:
+            idx = universe_index[stock]
+            long_short_weight[idx] = weight
+
+        for stock in short_stocks:
+            idx = universe_index[stock]
+            long_short_weight[idx] = -weight
+
+
+        target_weight_position = {stock: weight for stock, weight in zip(universe, long_short_weight)}
+
+        # 特殊情况处理：当前持仓中股票不在 universe 中，直接 raise 错误
+        # for stock in current.get_stock_list():
+        #     if stock not in universe:
+        #         raise ValueError(f"当前持仓股票 {stock} 不在 universe 中")
+        for stock in current.get_stock_list():
+            if stock not in universe:
+                self.logger.warning(f"当前持仓股票 {stock} 不在 universe 中")
+                target_weight_position[stock] = 0
+
+        if self.verbose:
+            self.logger.info("trade date: {:%Y-%m-%d}".format(trade_date))
+            self.logger.info("number of holding stocks: {}".format(len(target_weight_position)))
+            self.logger.info("total holding weight: {:.6f}".format(long_short_weight.sum()))
+
+        return target_weight_position
+
+    def generate_trade_decision(self, execute_result=None):
+        # generate_trade_decision
+        # generate_target_weight_position() and generate_order_list_from_target_weight_position() to generate order_list
+
+        # get the number of trading step finished, trade_step can be [0, 1, 2, ..., trade_len - 1]
+        trade_step = self.trade_calendar.get_trade_step()
+        trade_start_time, trade_end_time = self.trade_calendar.get_step_time(trade_step)
+        pred_start_time, pred_end_time = self.trade_calendar.get_step_time(trade_step, shift=1)
+        pred_score = self.signal.get_signal(start_time=pred_start_time, end_time=pred_end_time)
+        if pred_score is None:
+            return TradeDecisionWO([], self)
+        current_temp = copy.deepcopy(self.trade_position)
+        assert isinstance(current_temp, Position)  # Avoid InfPosition
+
+        target_weight_position = self.generate_target_weight_position(
+            score=pred_score, current=current_temp, trade_start_time=trade_start_time, trade_end_time=trade_end_time
+        )
+        trade_account = self.common_infra.get('trade_account')
+        last_account_value = trade_account.portfolio_metrics.get_latest_account_value()
+        order_list = self.order_generator.generate_order_list_from_target_weight_position(
+            current=current_temp,
+            trade_exchange=self.trade_exchange,
+            risk_degree=self.get_risk_degree(trade_step),
+            target_weight_position=target_weight_position,
+            pred_start_time=pred_start_time,
+            pred_end_time=pred_end_time,
+            trade_start_time=trade_start_time,
+            trade_end_time=trade_end_time,
+            last_account_value=last_account_value,
+        )
+        return TradeDecisionWO(order_list, self)

@@ -194,21 +194,22 @@ class Account:
             # update cost
             self.accum_info.add_cost(cost)
 
-            # update return from order
-            trade_amount = trade_val / trade_price
-            if order.direction == Order.SELL:  # 0 for sell
-                # when sell stock, get profit from price change
-                # 这里的收益率计算的是 T_-1 的 `close` 和 T 的 `open` 之间的收益率，且只对调仓时有效，非调仓时的收益率
-                # 调用 self.update_portfolio_metrics 记录
-                profit = trade_val - self.current_position.get_stock_price(order.stock_id) * trade_amount
-                self.accum_info.add_return_value(profit)  # note here do not consider cost
-
-            elif order.direction == Order.BUY:  # 1 for buy
-                # when buy stock, we get return for the rtn computing method
-                # profit in buy order is to make rtn is consistent with earning at the end of bar
-                # 同上
-                profit = self.current_position.get_stock_price(order.stock_id) * trade_amount - trade_val
-                self.accum_info.add_return_value(profit)  # note here do not consider cost
+            # TODO 修改成可直接多空转换交易后，计算 profit 需要修改
+            # # update return from order
+            # trade_amount = trade_val / trade_price
+            # if order.direction == Order.SELL:  # 0 for sell
+            #     # when sell stock, get profit from price change
+            #     # 这里的收益率计算的是 T_-1 的 `close` 和 T 的 `open` 之间的收益率，且只对调仓时有效，非调仓时的收益率
+            #     # 调用 self.update_portfolio_metrics 记录
+            #     profit = trade_val - self.current_position.get_stock_price(order.stock_id) * trade_amount
+            #     self.accum_info.add_return_value(profit)  # note here do not consider cost
+            #
+            # elif order.direction == Order.BUY:  # 1 for buy
+            #     # when buy stock, we get return for the rtn computing method
+            #     # profit in buy order is to make rtn is consistent with earning at the end of bar
+            #     # 同上
+            #     profit = self.current_position.get_stock_price(order.stock_id) * trade_amount - trade_val
+            #     self.accum_info.add_return_value(profit)  # note here do not consider cost
 
     def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
         # This function only support LongShortPosition !!!!!!!
@@ -287,9 +288,10 @@ class Account:
         now_turnover = self.accum_info.get_turnover - last_total_turnover
 
         # 当持仓市值增加的时候，那么所占用的保证金也会增加，可用现金减少，反之，当持仓市值减少的时候，那么所占用的保证金也会减少，可用现金增加
-        self.current_position.position["cash"] -= ((now_account_long_value + now_account_short_value) -
-                                                   (last_short_account_value + last_long_account_value)) / self.leverage
-
+        update_margin = ((now_account_long_value + now_account_short_value) -
+                       (last_short_account_value + last_long_account_value)) / self.leverage
+        self.current_position.position["cash"] -= update_margin
+        cash_margin = self.current_position.position["cash"] + (now_account_long_value + now_account_short_value)/self.leverage
         # update portfolio_metrics for today
         # judge whether the trading is begin.
         # and don't add init account state into portfolio_metrics, due to we don't have excess return in those days.
