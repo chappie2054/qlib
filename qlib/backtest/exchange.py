@@ -673,7 +673,7 @@ class Exchange:
                 sell_order_list.append(
                     Order(
                         stock_id=stock_id,
-                        amount=abs(deal_amount),
+                        amount=deal_amount,
                         direction=Order.SELL,
                         start_time=start_time,
                         end_time=end_time,

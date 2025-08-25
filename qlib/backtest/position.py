@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any, Dict, List, Union, Tuple
+from webbrowser import open_new
 
 import numpy as np
 import pandas as pd
@@ -347,7 +348,8 @@ class Position(BasePosition):
         self.position[stock_id]["price"] = price
         self.position[stock_id]["weight"] = 0  # update the weight in the end of the trade date
 
-    def _buy_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
+    def _buy_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float,
+                   is_close_order: bool, leverage: int, trade_amount: float) -> None:
         trade_amount = trade_val / trade_price
         if stock_id not in self.position:
             self._init_stock(stock_id=stock_id, amount=trade_amount, price=trade_price)
@@ -357,7 +359,8 @@ class Position(BasePosition):
 
         self.position["cash"] -= trade_val + cost
 
-    def _sell_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
+    def _sell_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float,
+                    is_close_order: bool, leverage: int, trade_amount: float) -> None:
         trade_amount = trade_val / trade_price
         if stock_id not in self.position:
             raise KeyError("{} not in current position".format(stock_id))
@@ -397,12 +400,13 @@ class Position(BasePosition):
 
     def update_order(self, order: Order, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
         # handle order, order is a order class, defined in exchange.py
+        trade_amount = trade_val / trade_price
         if order.direction == Order.BUY:
             # BUY
-            self._buy_stock(order.stock_id, trade_val, cost, trade_price, is_close_order, leverage)
+            self._buy_stock(order.stock_id, trade_val, cost, trade_price, is_close_order, leverage, trade_amount)
         elif order.direction == Order.SELL:
             # SELL
-            self._sell_stock(order.stock_id, trade_val, cost, trade_price, is_close_order, leverage)
+            self._sell_stock(order.stock_id, trade_val, cost, trade_price, is_close_order, leverage, trade_amount)
         else:
             raise NotImplementedError("do not support order direction {}".format(order.direction))
 
@@ -601,7 +605,7 @@ class InfPosition(BasePosition):
 
 class LongShortPosition(Position):
     """支持多空双向交易的持仓类"""
-    def _update_position(self, stock_id: str, trade_amount: float, trade_price: float, is_close_order: bool) -> None:
+    def _update_position(self, stock_id: str, trade_amount: float, trade_price: float, is_close_order: bool, cost: float, leverage: int) -> None:
         """处理持仓更新的通用逻辑
         
         Parameters
@@ -614,41 +618,75 @@ class LongShortPosition(Position):
             交易价格
         is_close_order : bool
             是否为平仓订单
+        cost : float
+            交易成本
+        leverage : int
+            杠杆倍数
         """
+        abs_trade_margin = abs(trade_amount * trade_price) / leverage
         if stock_id not in self.position:
             if is_close_order:
                 raise NotImplementedError(f"The order is not in position, can't to close it")
             self._init_stock(stock_id=stock_id, amount=trade_amount, price=trade_price)
+            self.position["cash"] -= abs_trade_margin - cost  # Open orders take up margin
         else:
             current_amount = self.position[stock_id]["amount"]
+            delta_amount = current_amount + trade_amount
+            abs_current_margin = abs(current_amount * trade_price) / leverage
+            abs_delta_margin = abs(delta_amount * trade_price) / leverage
+
+            # TODO 修改 LongShortTopkDroupoutStrategy 支持也不需要传入 is_close_order 的订单
             if not is_close_order and trade_amount * current_amount < 0:
-                raise NotImplementedError(f"Orders and positions are not in the same direction")
+                # 由于 Weight Strategy 的订单不会判断是否和持仓方向一致，不会传入 is_close_order 字段，所以要做独立区分
+                # 依据 trade_amount 和 current_amount 的多少判断出 3 种情况
+                # 1. 持仓数量小于交易数量，需要平仓并开出方向的仓位
+                # 2. 持仓数量大于交易数量，只需要做减仓
+                # 3. 持仓数量等于交易数量，直接平仓
+                if abs(current_amount) < abs(trade_amount):
+                    self.position["cash"] += abs_current_margin - abs_delta_margin - cost
+                    if np.isclose(delta_amount, 0, atol=1e-5):
+                        self.position[stock_id]["amount"] = 0
+                    else:
+                        self.position[stock_id]["amount"] = delta_amount
+                elif abs(current_amount) >= abs(trade_amount):
+                    self.position["cash"] += abs_trade_margin - cost
+                    if np.isclose(delta_amount, 0, atol=1e-5):
+                        self.position[stock_id]["amount"] = 0
+                    else:
+                        self.position[stock_id]["amount"] = delta_amount
 
-            new_amount = current_amount + trade_amount
-            if np.isclose(new_amount, 0, atol=1e-5):
-                # Positions with amount of 0 are used to calculate profits, and are deleted after calculating profits
-                self.position[stock_id]["amount"] = 0
             else:
-                self.position[stock_id]["amount"] += trade_amount
-    
-    def _buy_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
-        trade_amount = trade_val / trade_price
-        self._update_position(stock_id, trade_amount, trade_price, is_close_order)
-        
-        # TODO 1. Not support _settle_type 2. It is necessary to support leveraged trading to reduce margin occupation
-        # trade_val > 0
-        if is_close_order:
-            self.position["cash"] += trade_val / leverage - cost # Close orders release margin occupancy
-        else:
-            self.position["cash"] += -1 * trade_val / leverage - cost # Open orders take up margin
+                if is_close_order:
+                    self.position["cash"] += abs_trade_margin - cost  # Close orders release margin occupancy
+                else:
+                    self.position["cash"] -= abs_trade_margin - cost  # Open orders take up margin
 
-    def _sell_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float, is_close_order: bool, leverage: int) -> None:
-        trade_amount = trade_val / trade_price
-        self._update_position(stock_id, trade_amount, trade_price, is_close_order)
+                if np.isclose(delta_amount, 0, atol=1e-5):
+                    # Positions with amount of 0 are used to calculate profits, and are deleted after calculating profits
+                    self.position[stock_id]["amount"] = 0
+                else:
+                    self.position[stock_id]["amount"] += trade_amount
+
+    def _buy_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float,
+                   is_close_order: bool, leverage: int, trade_amount: float) -> None:
+        self._update_position(stock_id, trade_amount, trade_price, is_close_order, cost, leverage)
+
+        # TODO 1. Not support _settle_type
+        # Note: 我直接废弃下面的逻辑,将其加入到 _update_position 中
+        # trade_val > 0
+        # if is_close_order:
+        #     self.position["cash"] += margin - cost  # Close orders release margin occupancy
+        # else:
+        #     self.position["cash"] += -1 * margin - cost  # Open orders take up margin
+
+    def _sell_stock(self, stock_id: str, trade_val: float, cost: float, trade_price: float,
+                    is_close_order: bool, leverage: int, trade_amount: float) -> None:
+        self._update_position(stock_id, trade_amount, trade_price, is_close_order, cost, leverage)
         
         # TODO ditto
-        # trade_val < 0
-        if is_close_order:
-            self.position["cash"] += -1 * trade_val / leverage - cost # Close orders release margin occupancy
-        else:
-            self.position["cash"] += trade_val / leverage - cost # Open orders take up margin
+        # Note: 我直接废弃下面的逻辑,将其加入到 _update_position 中
+        # # trade_val < 0
+        # if is_close_order:
+        #     self.position["cash"] += -1 * margin - cost # Close orders release margin occupancy
+        # else:
+        #     self.position["cash"] += margin - cost # Open orders take up margin

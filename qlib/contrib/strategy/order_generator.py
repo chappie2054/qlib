@@ -22,6 +22,7 @@ class OrderGenerator:
         pred_end_time: pd.Timestamp,
         trade_start_time: pd.Timestamp,
         trade_end_time: pd.Timestamp,
+        last_account_value: float,
     ) -> list:
         """generate_order_list_from_target_weight_position
 
@@ -41,6 +42,8 @@ class OrderGenerator:
         :type trade_start_time: pd.Timestamp
         :param trade_end_time:
         :type trade_end_time: pd.Timestamp
+        :param last_account_value:
+        :type last_account_value: float
 
         :rtype: list
         """
@@ -60,6 +63,7 @@ class OrderGenWInteract(OrderGenerator):
         pred_end_time: pd.Timestamp,
         trade_start_time: pd.Timestamp,
         trade_end_time: pd.Timestamp,
+        last_account_value: float,
     ) -> list:
         """generate_order_list_from_target_weight_position
 
@@ -152,6 +156,7 @@ class OrderGenWOInteract(OrderGenerator):
         pred_end_time: pd.Timestamp,
         trade_start_time: pd.Timestamp,
         trade_end_time: pd.Timestamp,
+        last_account_value: float,
     ) -> list:
         """generate_order_list_from_target_weight_position
 
@@ -209,6 +214,92 @@ class OrderGenWOInteract(OrderGenerator):
                 )
             else:
                 continue
+        order_list = trade_exchange.generate_order_for_target_amount_position(
+            target_position=amount_dict,
+            current_position=current.get_stock_amount_dict(),
+            start_time=trade_start_time,
+            end_time=trade_end_time,
+        )
+        return order_list
+
+
+class LongShortOrderGenWOInteract(OrderGenerator):
+    """Order Generator Without Interact and support long short weight strategy
+
+    只要不存在于目标持仓的股票，都需要平仓
+    """
+
+    def generate_order_list_from_target_weight_position(
+            self,
+            current: Position,
+            trade_exchange: Exchange,
+            target_weight_position: dict,
+            risk_degree: float,
+            pred_start_time: pd.Timestamp,
+            pred_end_time: pd.Timestamp,
+            trade_start_time: pd.Timestamp,
+            trade_end_time: pd.Timestamp,
+            last_account_value,
+    ) -> list:
+        """generate_order_list_from_target_weight_position
+
+        generate order list directly not using the information (e.g. whether can be traded, the accurate trade price)
+         at trade date.
+        In target weight position, generating order list need to know the price of objective stock in trade date,
+        but we cannot get that
+        value when do not interact with exchange, so we check the %close price at pred_date or price recorded
+        in current position.
+
+        :param current:
+        :type current: Position
+        :param trade_exchange:
+        :type trade_exchange: Exchange
+        :param target_weight_position:
+        :type target_weight_position: dict
+        :param risk_degree:
+        :type risk_degree: float
+        :param pred_start_time:
+        :type pred_start_time: pd.Timestamp
+        :param pred_end_time:
+        :type pred_end_time: pd.Timestamp
+        :param trade_start_time:
+        :type trade_start_time: pd.Timestamp
+        :param trade_end_time:
+        :type trade_end_time: pd.Timestamp
+        :param last_account_value:
+        :type last_account_value: float
+
+        :rtype: list of generated orders
+        """
+        if target_weight_position is None:
+            return []
+
+        risk_total_value = risk_degree * last_account_value
+
+        current_stock = current.get_stock_list()
+        amount_dict = {}
+        for stock_id in target_weight_position:
+            if trade_exchange.is_stock_tradable(
+                    stock_id=stock_id, start_time=trade_start_time, end_time=trade_end_time
+            ) and trade_exchange.is_stock_tradable(
+                stock_id=stock_id, start_time=pred_start_time, end_time=pred_end_time
+            ):
+                amount_dict[stock_id] = (
+                        risk_total_value
+                        * target_weight_position[stock_id]
+                        / trade_exchange.get_close(stock_id, start_time=pred_start_time, end_time=pred_end_time)
+                )
+                # TODO: Qlib use None to represent trading suspension.
+                #  So last close price can't be the estimated trading price.
+                # Maybe a close price with forward fill will be a better solution.
+            elif stock_id in current_stock:
+                amount_dict[stock_id] = (
+                        risk_total_value * target_weight_position[stock_id] / current.get_stock_price(stock_id)
+                )
+            else:
+                # raise NotImplementedError(f"stock {stock_id} is not tradable at trade date {trade_start_time}")
+                continue
+
         order_list = trade_exchange.generate_order_for_target_amount_position(
             target_position=amount_dict,
             current_position=current.get_stock_amount_dict(),
