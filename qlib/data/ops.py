@@ -279,6 +279,64 @@ class Not(NpElemOperator):
         super(Not, self).__init__(feature, "bitwise_not")
 
 
+class S_log1p(ElemOperator):
+    """Signed Logarithm with 1 plus
+    
+    Apply sign function to the input and multiply by the natural logarithm 
+    of 1 plus the absolute value of the input. This transformation helps 
+    handle both positive and negative values while maintaining the sign.
+    
+    Formula: sign(x) * log(1 + |x|)
+    
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+
+    Returns
+    ----------
+    Expression
+        a feature instance with signed log1p transformation applied
+    """
+
+    def __init__(self, feature):
+        super(S_log1p, self).__init__(feature)
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        # Ensure numeric type to avoid issues with sign and log operations
+        series = series.astype(np.float64)
+        return np.sign(series) * np.log1p(np.abs(series))
+
+
+class Inv(ElemOperator):
+    """Inverse Operator
+    
+    Calculate the reciprocal (inverse) of the input values.
+    
+    Formula: 1 / x
+    
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+
+    Returns
+    ----------
+    Expression
+        a feature instance with inverse transformation applied
+    """
+
+    def __init__(self, feature):
+        super(Inv, self).__init__(feature)
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        # Ensure numeric type and handle potential division by zero
+        series = series.astype(np.float64)
+        return 1.0 / series
+
+
 #################### Pair-Wise Operator ####################
 class PairOperator(ExpressionOps):
     """Pair-wise operator
@@ -1837,6 +1895,203 @@ class TResample(ElemOperator):
 
 
 TOpsList = [TResample]
+class ts_ir(Rolling):
+    """Time Series Information Ratio
+    
+    Calculate the information ratio as mean divided by standard deviation
+    over a rolling window.
+    
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+    N : int
+        rolling window size
+        
+    Returns
+    ----------
+    Expression
+        a feature instance with rolling information ratio
+    """
+    
+    def __init__(self, feature, N):
+        super(ts_ir, self).__init__(feature, N, "ts_ir")
+    
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        if self.N == 0:
+            # expanding window
+            def calc_ir(x):
+                if len(x) < 2 or np.std(x) == 0:
+                    return np.nan
+                return np.mean(x) / np.std(x)
+            result = series.expanding(min_periods=2).apply(calc_ir, raw=True)
+        else:
+            # rolling window
+            def calc_ir(x):
+                if len(x) < 2 or np.std(x) == 0:
+                    return np.nan
+                return np.mean(x) / np.std(x)
+            result = series.rolling(self.N, min_periods=2).apply(calc_ir, raw=True)
+        return result
+
+
+class ts_min_max_diff(Rolling):
+    """Time Series Min-Max Difference
+    
+    Calculate the difference between maximum and minimum values
+    over a rolling window.
+    
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+    N : int
+        rolling window size
+        
+    Returns
+    ----------
+    Expression
+        a feature instance with rolling max-min difference
+    """
+    
+    def __init__(self, feature, N):
+        super(ts_min_max_diff, self).__init__(feature, N, "ts_min_max_diff")
+    
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        if self.N == 0:
+            # expanding window
+            def calc_min_max_diff(x):
+                if len(x) == 0:
+                    return np.nan
+                return np.max(x) - np.min(x)
+            result = series.expanding(min_periods=1).apply(calc_min_max_diff, raw=True)
+        else:
+            # rolling window
+            def calc_min_max_diff(x):
+                if len(x) == 0:
+                    return np.nan
+                return np.max(x) - np.min(x)
+            result = series.rolling(self.N, min_periods=1).apply(calc_min_max_diff, raw=True)
+        return result
+
+
+class ts_max_diff(Rolling):
+    """Time Series Max Difference
+    
+    Calculate the difference between the last value and the maximum value
+    over a rolling window.
+    
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+    N : int
+        rolling window size
+        
+    Returns
+    ----------
+    Expression
+        a feature instance with rolling last-max difference
+    """
+    
+    def __init__(self, feature, N):
+        super(ts_max_diff, self).__init__(feature, N, "ts_max_diff")
+    
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        if self.N == 0:
+            # expanding window
+            def calc_max_diff(x):
+                if len(x) == 0:
+                    return np.nan
+                return x[-1] - np.max(x)
+            result = series.expanding(min_periods=1).apply(calc_max_diff, raw=True)
+        else:
+            # rolling window
+            def calc_max_diff(x):
+                if len(x) == 0:
+                    return np.nan
+                return x[-1] - np.max(x)
+            result = series.rolling(self.N, min_periods=1).apply(calc_max_diff, raw=True)
+        return result
+
+
+class ts_min_diff(Rolling):
+    """Time Series Min Difference
+    
+    Calculate the difference between the last value and the minimum value
+    over a rolling window.
+    
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+    N : int
+        rolling window size
+        
+    Returns
+    ----------
+    Expression
+        a feature instance with rolling last-min difference
+    """
+    
+    def __init__(self, feature, N):
+        super(ts_min_diff, self).__init__(feature, N, "ts_min_diff")
+    
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        if self.N == 0:
+            # expanding window
+            def calc_min_diff(x):
+                if len(x) == 0:
+                    return np.nan
+                return x[-1] - np.min(x)
+            result = series.expanding(min_periods=1).apply(calc_min_diff, raw=True)
+        else:
+            # rolling window
+            def calc_min_diff(x):
+                if len(x) == 0:
+                    return np.nan
+                return x[-1] - np.min(x)
+            result = series.rolling(self.N, min_periods=1).apply(calc_min_diff, raw=True)
+        return result
+
+
+class ts_pctchange(Rolling):
+    """Time Series Percentage Change
+    
+    Calculate the percentage change between the current value and the value
+    N periods ago over a rolling window.
+    
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+    N : int
+        number of periods for percentage change calculation
+        
+    Returns
+    ----------
+    Expression
+        a feature instance with rolling percentage change
+    """
+    
+    def __init__(self, feature, N):
+        super(ts_pctchange, self).__init__(feature, N, "ts_pctchange")
+    
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        if self.N == 0:
+            # For N=0, use the first value as reference
+            result = series.pct_change()
+        else:
+            # Calculate percentage change with specified period
+            result = series.pct_change(periods=self.N)
+        return result
+
+
 OpsList = [
     Today,
     ChangeInstrument,
@@ -1894,6 +2149,13 @@ OpsList = [
     TrailingStop,
     CSRank,
     CSScale,
+    ts_ir,
+    ts_min_max_diff,
+    ts_max_diff,
+    ts_min_diff,
+    ts_pctchange,
+    S_log1p,
+    Inv,
 ] + [TResample]
 
 
