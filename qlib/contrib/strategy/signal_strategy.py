@@ -1,5 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+import logging
 import os
 import copy
 import warnings
@@ -794,16 +795,33 @@ class LongShortWeightStrategy(WeightStrategyBase):
         trade_start_time, trade_end_time = self.trade_calendar.get_step_time(trade_step)
         pred_start_time, pred_end_time = self.trade_calendar.get_step_time(trade_step, shift=1)
         pred_score = self.signal.get_signal(start_time=pred_start_time, end_time=pred_end_time)
-        if pred_score is None:
+        trade_account = self.common_infra.get('trade_account')
+
+        if trade_account.portfolio_metrics.latest_pm_time is None:
+            self.logger.info(f"last_account_value is None, trade_step: {trade_step}")
             return TradeDecisionWO([], self)
+        else:
+            last_account_value = trade_account.portfolio_metrics.get_latest_account_value()
+
+        # 检查pred_start_time是否不是08:00:00
+        if pred_start_time.strftime("%H:%M:%S") != ("00:00:00" if self.trade_calendar.freq == "day" else "07:00:00"):
+            return TradeDecisionWO([], self)
+
+        self.hold_count += 1
+
+        if isinstance(pred_score, pd.DataFrame):
+            pred_score = pred_score.iloc[:, 0]
+
+        if pred_score is None or (
+                self.hold_count % self.rebalancing_steps != 1 and not self.rebalancing_every_day):  # pred_score not None & Trade every 3 days
+            return TradeDecisionWO([], self)
+
         current_temp = copy.deepcopy(self.trade_position)
         assert isinstance(current_temp, Position)  # Avoid InfPosition
 
         target_weight_position = self.generate_target_weight_position(
             score=pred_score, current=current_temp, trade_start_time=trade_start_time, trade_end_time=trade_end_time
         )
-        trade_account = self.common_infra.get('trade_account')
-        last_account_value = trade_account.portfolio_metrics.get_latest_account_value()
         order_list = self.order_generator.generate_order_list_from_target_weight_position(
             current=current_temp,
             trade_exchange=self.trade_exchange,
