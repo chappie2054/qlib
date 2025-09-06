@@ -7,7 +7,8 @@ import numpy as np
 import pandas as pd
 
 from qlib.utils.data import robust_zscore, zscore
-from ...constant import EPS
+# from ...constant import EPS
+from qlib.constant import EPS
 from .utils import fetch_df_by_index
 from ...utils.serial import Serializable
 from ...utils.paral import datetime_groupby_apply
