@@ -5,6 +5,8 @@ from typing import List, Optional, Dict, Any
 from joblib import Parallel, delayed
 from ..graph import ScatterGraph
 from ..utils import guess_plotly_rangebreaks, _rankic_direction
+from plotly.subplots import make_subplots  # 新增：用于创建多子图容器
+import os  # 新增：用于处理文件路径
 
 
 def batch_factors_regression_test(
@@ -237,9 +239,151 @@ def batch_factors_regression_test(
         ).figure
         all_figs.append(fig)
 
+    # 调用合并函数生成单个HTML文件
+    merge_figs_to_single_html(
+        all_figs=all_figs,
+        factor_names=test_factors,
+        save_path=r"D:\因子测试图\all_factor_cumulative_returns.html",
+        num_factors=len(test_factors)
+    )
+
     if show_notebook:
         ScatterGraph.show_graph_in_notebook(all_figs)
 
     # 整理结果DataFrame并设置因子为索引
     t_stats_df = t_stats_df.set_index('factor')
     return t_stats_df
+
+
+def merge_figs_to_single_html(all_figs, factor_names, save_path, num_factors):
+    """
+    新增函数：将多个ScatterGraph生成的图整合为单个多子图HTML
+    
+    优化内容：
+    1. 页面内容居中展示
+    2. 图片长宽比3:1
+    3. 所有因子在一个页面中显示，不分页
+    """
+    try:
+        # 验证输入
+        if not all_figs or len(all_figs) == 0:
+            print("⚠️ 没有图表需要合并")
+            return
+            
+        # 重新设计图表尺寸 - 最大化曲线区域，消除所有留白
+        subplot_height = 350      # 增加高度给标题留出空间
+        subplot_width = 700         # 稍微增加宽度
+        
+        # 精确计算总高度，减少额外留白
+        chart_height = subplot_height * num_factors + 30  # 减少额外高度
+        chart_width = subplot_width
+
+        # 1. 创建多子图容器 - 完全重新设计，最大化曲线区域
+        fig_combined = make_subplots(
+            rows=num_factors,
+            cols=1,
+            subplot_titles=factor_names,  # 恢复因子名称作为标题
+            vertical_spacing=min(0.01, 0.3 / max(num_factors - 1, 1)) if num_factors > 1 else 0.02,
+            shared_xaxes=False,
+        )
+
+        # 2. 提取并添加每个图的轨迹，移除所有装饰元素
+        for idx, single_fig in enumerate(all_figs, 1):
+            for trace in single_fig.data:
+                fig_combined.add_trace(
+                    trace,
+                    row=idx,
+                    col=1
+                )
+
+            # 极度简化的坐标轴配置 - 只保留必要的刻度
+            fig_combined.update_xaxes(
+                row=idx,
+                col=1,
+                showgrid=True,
+                gridcolor="#f0f0f0",
+                gridwidth=0.5,
+                tickfont=dict(size=6),  # 极小的刻度字体
+                tickangle=0,  # 水平显示，节省空间
+                automargin=False,
+                title_text='',  # 移除所有标题
+                showline=True,
+                linecolor="#d0d0d0",
+                linewidth=0.5
+            )
+            fig_combined.update_yaxes(
+                row=idx,
+                col=1,
+                showgrid=True,
+                gridcolor="#f0f0f0",
+                gridwidth=0.5,
+                tickfont=dict(size=6),  # 极小的刻度字体
+                automargin=False,
+                title_text='',  # 移除所有标题
+                showline=True,
+                linecolor="#d0d0d0",
+                linewidth=0.5
+            )
+
+        # 3. 优化整体布局 - 完全消除留白
+        fig_combined.update_layout(
+            height=chart_height,
+            width=chart_width,
+            
+            # 移除主标题
+            title_text="",
+            
+            # 稍大字体确保可读性
+            font=dict(
+                family="Arial, sans-serif",
+                size=8,
+                color="#333333"
+            ),
+            
+            # 进一步减少边距
+            margin=dict(
+                l=20,
+                r=10,
+                t=15,
+                b=10,
+                pad=0
+            ),
+            
+            # 背景设置
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            
+            # 图例设置
+            showlegend=False,
+            
+            # 网格设置
+            xaxis=dict(
+                showgrid=True,
+                gridcolor="#f0f0f0",
+                gridwidth=1
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridcolor="#f0f0f0",
+                gridwidth=1
+            ),
+            
+            # 整体居中
+            autosize=False,
+        )
+
+        # 4. 生成HTML文件
+        fig_combined.write_html(
+            save_path,
+            include_plotlyjs=True,
+            full_html=True,
+            config={'responsive': True}
+        )
+        
+        print(f"✅ 优化后的可视化报告已生成：{os.path.abspath(save_path)}")
+        print(f"📊 共{num_factors}个因子：完整显示，每个图表 {subplot_width}×{subplot_height}px (2:1宽高比，含标题)")
+        print(f"📊 总图表尺寸：{chart_width}×{chart_height}px，最小留白")
+        
+    except Exception as e:
+        print(f"❌ 合并图表时发生错误：{str(e)}")
+        return
