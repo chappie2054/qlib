@@ -563,6 +563,7 @@ class DatasetProvider(abc.ABC):
 
         inst_l = []
         task_l = []
+        # workers = 1
         for inst, spans in it:
             inst_l.append(inst)
             task_l.append(

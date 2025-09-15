@@ -701,6 +701,7 @@ class LongShortWeightStrategy(WeightStrategyBase):
         only_tradable=False,
         forbid_all_trade_at_limit=False,
         long_short_total_risk_degree=1,
+        max_turnover_rate=None,  # 最大换手率，None表示不约束
         **kwargs,
     ):
         kwargs['risk_degree'] = long_short_total_risk_degree
@@ -718,6 +719,13 @@ class LongShortWeightStrategy(WeightStrategyBase):
         self.rebalancing_every_day = True if rebalancing_steps == 1 else False
 
         self.hold_count = 0
+        
+        # 初始化换手率优化器
+        if max_turnover_rate is not None:
+            from qlib.contrib.strategy.optimizer.turnover_optimizer import TurnoverConstrainedOptimizer
+            self.turnover_optimizer = TurnoverConstrainedOptimizer(max_turnover_rate)
+        else:
+            self.turnover_optimizer = None
 
     def generate_target_weight_position(self, score, current, trade_start_time, trade_end_time):
         """
@@ -731,30 +739,29 @@ class LongShortWeightStrategy(WeightStrategyBase):
 
         trade_date = trade_start_time
 
-        # TODO 添加黑名单交易池
-        # mask force close
-        # blacklist = []
-        # mask_force_close = np.array([stock in blacklist for stock in universe], dtype=bool)
-
-        # pre_date = get_pre_trading_date(trade_date, future=True)
-        # tradable = D.features(D.instruments("all"), ["$volume"], start_time=pre_date, end_time=pre_date).squeeze()
-        # tradable.index = tradable.index.droplevel(level="datetime")
-        # tradable = tradable.reindex(score.index.tolist()).gt(0)
-        # score_tradable = score[tradable]
-        # universe = score_tradable.index.tolist()
-
         universe = score.index.tolist()
 
-        # TODO optimize
-
-        # score_tradable = score_tradable.squeeze()
-        # score_sorted = score_tradable.sort_values(ascending=False)
         score = score.squeeze()
         score_sorted = score.sort_values(ascending=False)
         n_total = len(score_sorted)
-        n_group = max(int(n_total / self.percentageByGroup), 1)  # 至少一个
-        long_stocks = score_sorted.iloc[:n_group].index.tolist()
-        short_stocks = score_sorted.iloc[-n_group:].index.tolist()
+        n_group = max(int(n_total * self.percentageByGroup), 1)  # 至少一个
+        
+        # 获取当前持仓
+        current_position = current.get_stock_amount_dict()
+        
+        # 如果启用了换手率优化器
+        if self.turnover_optimizer is not None:
+            # 优化器直接返回完整的股票列表
+            long_stocks, short_stocks = self.turnover_optimizer(
+                score=score,
+                current_position=current_position,
+                n_group=n_group
+            )
+        else:
+            # 默认逻辑：无换手率约束
+            long_stocks = score_sorted.iloc[:n_group].index.tolist()
+            short_stocks = score_sorted.iloc[-n_group:].index.tolist()
+            
         long_short_weight = np.zeros(len(universe))
         universe_index = {stock: i for i, stock in enumerate(universe)}
         weight = self.long_short_total_risk_degree * 0.5 / n_group
@@ -767,13 +774,9 @@ class LongShortWeightStrategy(WeightStrategyBase):
             idx = universe_index[stock]
             long_short_weight[idx] = -weight
 
-
         target_weight_position = {stock: weight for stock, weight in zip(universe, long_short_weight)}
 
-        # 特殊情况处理：当前持仓中股票不在 universe 中，直接 raise 错误
-        # for stock in current.get_stock_list():
-        #     if stock not in universe:
-        #         raise ValueError(f"当前持仓股票 {stock} 不在 universe 中")
+        # 处理当前持仓中股票不在universe中的情况
         for stock in current.get_stock_list():
             if stock not in universe:
                 self.logger.warning(f"当前持仓股票 {stock} 不在 universe 中")
