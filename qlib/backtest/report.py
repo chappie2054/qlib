@@ -14,7 +14,7 @@ import qlib.utils.index_data as idd
 from qlib.backtest.decision import BaseTradeDecision, Order, OrderDir
 from qlib.backtest.exchange import Exchange
 
-from ..tests.config import CSI300_BENCH
+# from ..tests.config import CSI300_BENCH
 from ..utils.resam import get_higher_eq_freq_feature, resam_ts_data
 from .high_performance_ds import BaseOrderIndicator, BaseSingleMetric, NumpyOrderIndicator
 
@@ -101,7 +101,7 @@ class PortfolioMetrics:
     def _cal_benchmark(benchmark_config: Optional[dict], freq: str) -> Optional[pd.Series]:
         if benchmark_config is None:
             return None
-        benchmark = benchmark_config.get("benchmark", CSI300_BENCH)
+        benchmark = benchmark_config.get("benchmark", 'SH000300')
         if benchmark is None:
             return None
 
