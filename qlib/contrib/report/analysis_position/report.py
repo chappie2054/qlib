@@ -17,8 +17,10 @@ def _calculate_maximum(df: pd.DataFrame, is_ex: bool = False):
         end_date = df["cum_ex_return_wo_cost_mdd"].idxmin()
         start_date = df.loc[df.index <= end_date]["cum_ex_return_wo_cost"].idxmax()
     else:
-        end_date = df["return_wo_mdd"].idxmin()
-        start_date = df.loc[df.index <= end_date]["cum_return_wo_cost"].idxmax()
+        # end_date = df["return_wo_mdd"].idxmin()
+        # start_date = df.loc[df.index <= end_date]["cum_return_wo_cost"].idxmax()
+        end_date = df["account_mdd"].idxmin()
+        start_date = df.loc[df.index <= end_date]["account"].idxmax()
     return start_date, end_date
 
 
