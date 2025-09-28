@@ -1,12 +1,96 @@
-import pandas as pd
-import numpy as np
-from scipy import stats
-from typing import List, Optional, Dict, Any
+import os
+from typing import Any, Dict, List, Optional
+
 from joblib import Parallel, delayed
+import numpy as np
+import pandas as pd
+from plotly.subplots import make_subplots
+from scipy import stats
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
+
 from ..graph import ScatterGraph
-from ..utils import guess_plotly_rangebreaks, _rankic_direction
-from plotly.subplots import make_subplots  # 新增：用于创建多子图容器
-import os  # 新增：用于处理文件路径
+from ..utils import _rankic_direction, guess_plotly_rangebreaks  # 新增：用于处理文件路径
+
+
+def calculate_factor_quality_score(cum_returns: pd.Series, daily_returns: pd.Series) -> float:
+    """
+    计算因子质量评分，评估因子收益率累加曲线的平滑稳定上升性
+    
+    参数:
+        cum_returns: 累积因子收益率序列
+        daily_returns: 每日因子收益率序列
+        
+    返回:
+        float: 因子质量评分，越高表示因子质量越好（平滑稳定上升）
+    """
+    # 1. 计算NAV序列（累积净值）
+    # 使用累积收益率作为NAV
+    nav = cum_returns.values
+    
+    # 确保NAV从1开始（避免log(0)或负值）
+    if nav[0] <= 0:
+        nav = nav - nav[0] + 1
+    
+    # 检查NAV序列中是否有NaN或无穷值
+    if np.any(np.isnan(nav)) or np.any(np.isinf(nav)):
+        return 0.0
+    
+    # 确保整个NAV序列都是正数，避免log(0)或负值
+    min_nav = np.min(nav)
+    if min_nav <= 0:
+        nav = nav - min_nav + 1e-6  # 确保最小值为1e-6
+    
+    # 检查序列长度，如果太短则返回0
+    if len(nav) < 3:
+        return 0.0
+    
+    # 2. 计算趋势强度（annualized slope）— S
+    # 使用对数拟合以减少尺度问题
+    log_nav = np.log(nav)
+    t = np.arange(len(log_nav)).reshape(-1, 1)
+    
+    # 线性回归拟合
+    model = LinearRegression()
+    model.fit(t, log_nav)
+    b = model.coef_[0]  # 斜率
+    
+    # 计算年化趋势（假设是日数据，D=252）
+    D = 252
+    S = b * D
+    
+    # 如果S <= 0，直接返回0（无效因子）
+    if S <= 0:
+        return 0.0
+    
+    # 计算预测值和残差
+    log_nav_pred = model.predict(t)
+    residuals = log_nav - log_nav_pred
+    
+    # 3. 计算拟合优度（R^2）
+    r_squared = r2_score(log_nav, log_nav_pred)
+    
+    # 4. 计算增量一致性 / 单调性指标（Monotonicity Index, M）
+    # 计算NAV的日增量
+    delta_nav = np.diff(nav)
+    
+    # 计算M值
+    numerator = np.sum(np.maximum(delta_nav, 0))
+    denominator = np.sum(np.abs(delta_nav))
+    
+    # 避免除以0
+    if denominator == 0:
+        M = 0.0
+    else:
+        M = numerator / denominator
+    
+    # 5. 计算残差的标准差作为平滑度/噪声度量
+    sigma_epsilon = np.std(residuals)
+    
+    # 6. 计算综合评分
+    score = (S * r_squared * M) / (1 + sigma_epsilon)
+    
+    return score
 
 
 def batch_factors_regression_test(
@@ -216,18 +300,35 @@ def batch_factors_regression_test(
     selected_times = unique_times[::rebalance_period]
     sampled_results_df = results_df.loc[selected_times].copy()
 
-    # 计算累积因子收益率
+    # 计算累加因子收益率
     sampled_results_df['cum_f_alpha'] = sampled_results_df.groupby('factor')['f_alpha'].cumsum()
+    
+    # 计算每个因子的质量评分
+    quality_scores = {}
+    for factor in test_factors:
+        factor_data = sampled_results_df[sampled_results_df['factor'] == factor]
+        cum_returns = factor_data['cum_f_alpha']
+        daily_returns = factor_data['f_alpha']
+        quality_score = calculate_factor_quality_score(cum_returns, daily_returns)
+        quality_scores[factor] = quality_score
+    
+    # 将质量评分转换为DataFrame并按评分排序
+    quality_df = pd.DataFrame(list(quality_scores.items()), columns=['factor', 'quality_score'])
+    quality_df = quality_df.sort_values('quality_score', ascending=False)
+    
+    # 获取排序后的因子列表
+    sorted_test_factors = quality_df['factor'].tolist()
 
     # 绘制累积因子收益率曲线
     all_figs = []
-    for factor in test_factors:
+    for factor in sorted_test_factors:  # 使用排序后的因子列表
         factor_data = sampled_results_df[sampled_results_df['factor'] == factor].reset_index()
+        quality_score = quality_scores[factor]  # 获取该因子的质量评分
         fig = ScatterGraph(
             df=factor_data,
             name_dict={'cum_f_alpha': 'Cumulative Factor Return'},
             layout=dict(
-                title=f'{factor} Cumulative Factor Returns Over Time',
+                title=f'{factor} (Score: {quality_score:.4f}) Cumulative Factor Returns Over Time',  # 在标题中显示质量评分
                 xaxis=dict(
                     title='Date',
                     tickangle=45,
@@ -242,9 +343,9 @@ def batch_factors_regression_test(
     # 调用合并函数生成单个HTML文件
     merge_figs_to_single_html(
         all_figs=all_figs,
-        factor_names=test_factors,
+        factor_names=sorted_test_factors,  # 使用排序后的因子列表
         save_path=r"D:\因子测试图\all_factor_cumulative_returns.html",
-        num_factors=len(test_factors)
+        num_factors=len(sorted_test_factors)  # 使用排序后的因子数量
     )
 
     if show_notebook:
@@ -252,6 +353,13 @@ def batch_factors_regression_test(
 
     # 整理结果DataFrame并设置因子为索引
     t_stats_df = t_stats_df.set_index('factor')
+    
+    # 将质量评分添加到结果DataFrame中
+    t_stats_df = t_stats_df.join(quality_df.set_index('factor'))
+    
+    # 按质量评分排序
+    t_stats_df = t_stats_df.sort_values('quality_score', ascending=False)
+    
     return t_stats_df
 
 
