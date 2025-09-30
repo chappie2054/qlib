@@ -96,6 +96,7 @@ def calculate_factor_quality_score(cum_returns: pd.Series, daily_returns: pd.Ser
 def batch_factors_regression_test(
     factors_df: pd.DataFrame,
     risk_factors_names: Optional[List[str]] = None,
+    min_listing_days: int = 30,
     n_jobs: int = -1, verbose: int = 10,
     show_notebook: bool = True
 ) -> pd.DataFrame:
@@ -108,6 +109,7 @@ def batch_factors_regression_test(
                     索引: ['datetime', 'instrument']
                     列: MultiIndex [('feature', 因子名), ('label', 标签名)]
         risk_factors_names: 风险因子名称列表，用于剥离风险因子暴露
+        min_listing_days: 最小上市天数要求，默认为90天，用于过滤掉上市时间不足的股票
         n_jobs: 并行计算的进程数，-1表示使用所有可用CPU
         verbose: 并行计算详细程度，数值越大输出越详细
 
@@ -131,6 +133,8 @@ def batch_factors_regression_test(
         raise TypeError(f"factors_df must be a pandas DataFrame, got {type(factors_df).__name__}")
     if risk_factors_names is not None and not isinstance(risk_factors_names, list):
         raise TypeError(f"risk_factors_names must be a list or None, got {type(risk_factors_names).__name__}")
+    if not isinstance(min_listing_days, int):
+        raise TypeError(f"min_listing_days must be an integer, got {type(min_listing_days).__name__}")
     if not isinstance(n_jobs, int):
         raise TypeError(f"n_jobs must be an integer, got {type(n_jobs).__name__}")
     if not isinstance(verbose, int):
@@ -139,6 +143,10 @@ def batch_factors_regression_test(
     # 前提判断：检查是否存在NaN值
     if factors_df.isnull().any().any():
         raise ValueError("factors_df contains NaN values. Please clean the data before regression.")
+    
+    # 过滤掉上市天数不足的股票
+    if min_listing_days > 0:
+        factors_df = _filter_factors_by_listing_days(factors_df, min_listing_days)
     
     # 提取标签列（假设只有一个标签列）
     label_cols = factors_df.columns[factors_df.columns.get_level_values(0) == 'label']
@@ -361,6 +369,35 @@ def batch_factors_regression_test(
     t_stats_df = t_stats_df.sort_values('quality_score', ascending=False)
     
     return t_stats_df
+
+
+def _filter_factors_by_listing_days(factors_df: pd.DataFrame, min_days: int = 30) -> pd.DataFrame:
+    """
+    过滤掉上市天数不足的股票，防止Alpha收益来自新币
+    
+    参数:
+        factors_df: 包含因子和标签数据的MultiIndex DataFrame
+                    索引: ['datetime', 'instrument']
+                    列: MultiIndex [('feature', 因子名), ('label', 标签名)]
+        min_days: 最小上市天数要求，默认为90天
+        
+    返回:
+        pd.DataFrame: 过滤后的DataFrame，只包含上市天数超过min_days的股票数据
+    """
+    results = []
+    for instrument, df_inst in factors_df.groupby(level="instrument"):
+        df_inst = df_inst.sort_index(level="datetime")
+        dates = df_inst.index.get_level_values("datetime").unique()
+        if len(dates) > min_days:
+            # 保留 min_days 之后的数据
+            valid_dates = dates[min_days:]
+            mask = df_inst.index.get_level_values("datetime").isin(valid_dates)
+            results.append(df_inst[mask])
+        # 否则丢弃
+    if results:
+        return pd.concat(results)
+    else:
+        return pd.DataFrame(columns=factors_df.columns)
 
 
 def merge_figs_to_single_html(all_figs, factor_names, save_path, num_factors):
