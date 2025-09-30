@@ -16,14 +16,42 @@ from qlib.workflow import R
 class LGBModel(ModelFT, LightGBMFInt):
     """LightGBM Model"""
 
-    def __init__(self, loss="mse", early_stopping_rounds=50, num_boost_round=1000, **kwargs):
+    def __init__(self, loss="mse", early_stopping_rounds=50, num_boost_round=1000, min_listing_days=60, **kwargs):
         if loss not in {"mse", "binary"}:
             raise NotImplementedError
         self.params = {"objective": loss, "verbosity": -1}
         self.params.update(kwargs)
         self.early_stopping_rounds = early_stopping_rounds
         self.num_boost_round = num_boost_round
+        self.min_listing_days = min_listing_days
         self.model = None
+
+    def _filter_by_listing_days(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        过滤掉上市天数不足的股票，防止模型收益来自新币
+        
+        参数:
+            df: 包含因子和标签数据的DataFrame
+                索引: MultiIndex ['datetime', 'instrument']
+                列: ['feature', 'label']
+                
+        返回:
+            pd.DataFrame: 过滤后的DataFrame，只包含上市天数超过min_listing_days的股票数据
+        """
+        results = []
+        for instrument, df_inst in df.groupby(level="instrument"):
+            df_inst = df_inst.sort_index(level="datetime")
+            dates = df_inst.index.get_level_values("datetime").unique()
+            if len(dates) > self.min_listing_days:
+                # 保留 min_listing_days 之后的数据
+                valid_dates = dates[self.min_listing_days:]
+                mask = df_inst.index.get_level_values("datetime").isin(valid_dates)
+                results.append(df_inst[mask])
+            # 否则丢弃
+        if results:
+            return pd.concat(results)
+        else:
+            return pd.DataFrame(columns=df.columns)
 
     def _prepare_data(self, dataset: DatasetH, reweighter=None) -> List[Tuple[lgb.Dataset, str]]:
         """
@@ -37,6 +65,11 @@ class LGBModel(ModelFT, LightGBMFInt):
                 df = dataset.prepare(key, col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
                 if df.empty:
                     raise ValueError("Empty data from dataset, please check your dataset config.")
+                
+                # 过滤上市天数不足的股票
+                if self.min_listing_days > 0:
+                    df = self._filter_by_listing_days(df)
+                
                 x, y = df["feature"], df["label"]
 
                 # Lightgbm need 1D array as its label
