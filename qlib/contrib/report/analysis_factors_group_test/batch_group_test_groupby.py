@@ -3,6 +3,7 @@ import pandas as pd
 from typing import Tuple
 from joblib import Parallel, delayed
 from tqdm.notebook import tqdm
+from scipy.stats import spearmanr
 
 from ..graph import ScatterGraph, BarGraph
 from ..utils import guess_plotly_rangebreaks, _rankic_direction
@@ -89,14 +90,27 @@ def batch_factors_group_test(factors_df: pd.DataFrame, group_num: int = 10, show
 
     all_avg_returns = []
     all_figs = []
+    spearman_data = []  # 存储Spearman相关系数数据
 
     for colname, avg_returns, group_returns_df, group_cum_returns_df, weighted_returns_df in results:
         all_avg_returns.append(avg_returns)
+        
+        # 计算分组收益与分组序号的Spearman相关系数（衡量单调性强度）
+        group_indices = np.arange(1, len(avg_returns) + 1)
+        spearman_corr, spearman_pvalue = spearmanr(group_indices, avg_returns.values)
+        
+        # 将Spearman相关系数数据添加到列表中
+        spearman_data.append({
+            'factor': colname,
+            'spearman_corr': spearman_corr,
+            'spearman_pvalue': spearman_pvalue
+        })
+        
         if show_notebook:
             avg_returns_df = avg_returns.to_frame(name='avg_returns')
             fig_avg = BarGraph(
                 avg_returns_df,
-                layout=dict(title=f'{colname} Average Group Returns', xaxis=dict(title='Group'),
+                layout=dict(title=f'{colname} Average Group Returns (Spearman ρ={spearman_corr:.3f}, p={spearman_pvalue:.3f})', xaxis=dict(title='Group'),
                             yaxis=dict(title='Return')),
                 graph_kwargs={'type': 'bar'}
             ).figure
@@ -117,6 +131,8 @@ def batch_factors_group_test(factors_df: pd.DataFrame, group_num: int = 10, show
             all_figs.extend([fig_avg, fig_cum, fig_weighted])
 
     result_df = pd.DataFrame(all_avg_returns)
+    spearman_df = pd.DataFrame(spearman_data)  # 创建Spearman相关系数DataFrame
+    
     if show_notebook:
         ScatterGraph.show_graph_in_notebook(all_figs)
-    return result_df
+    return result_df, spearman_df
