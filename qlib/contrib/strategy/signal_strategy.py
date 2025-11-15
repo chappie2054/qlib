@@ -673,17 +673,21 @@ class LongShortWeightStrategy(WeightStrategyBase):
 
     本策略基于每个截面的因子得分，对股票进行排序，构建首尾两个分组：
     - 得分最高的一部分构成多头股票池
-    - 得分最低的一部分构成空头股票池
+    - 得分最低的一部分构成空头股票池（数量由short_long_ratio参数控制，默认是多头股票池的两倍）
 
     在构建多空组合的基础上，执行以下权重分配逻辑：
 
     权重分配规则：
     1. 非多空股票池中的股票权重设为 0；
     2. 多空股票池中的股票按绝对等权配置：
-       - 每只股票的绝对权重为：1 / 股票池大小
+       - 每只多头股票的绝对权重为：1 / 多头股票池大小
+       - 每只空头股票的绝对权重为：1 / (2 * 多头股票池大小)（是多头权重的一半）
        - 多头股票权重大于 0，空头股票权重小于 0；
     3. 多头股票组合的总权重为 +0.5，空头股票组合的总权重为 -0.5；
     4. 整体组合权重总和为 0，实现市值中性或风险中性配置；
+
+    参数说明：
+    - short_long_ratio: 空头端品种数量与多头端品种数量的比例，默认为2.0（即空头数量是多头数量的两倍）
 
     订单生成：
     1. 每个交易日，根据因子得分和权重分配规则，生成目标权重组合；
@@ -702,6 +706,7 @@ class LongShortWeightStrategy(WeightStrategyBase):
         forbid_all_trade_at_limit=False,
         long_short_total_risk_degree=1,
         max_turnover_rate=None,  # 最大换手率，None表示不约束
+        short_long_ratio=2.0,  # 空头端品种数量与多头端品种数量的比例，默认为2.0
         **kwargs,
     ):
         kwargs['risk_degree'] = long_short_total_risk_degree
@@ -716,6 +721,7 @@ class LongShortWeightStrategy(WeightStrategyBase):
         self.only_tradable = only_tradable
         self.forbid_all_trade_at_limit = forbid_all_trade_at_limit
         self.long_short_total_risk_degree = long_short_total_risk_degree  # 总风险敞口
+        self.short_long_ratio = short_long_ratio  # 空头端品种数量与多头端品种数量的比例
         self.rebalancing_every_day = True if rebalancing_steps == 1 else False
 
         self.hold_count = 0
@@ -723,7 +729,7 @@ class LongShortWeightStrategy(WeightStrategyBase):
         # 初始化换手率优化器
         if max_turnover_rate is not None:
             from qlib.contrib.strategy.optimizer.turnover_optimizer import TurnoverConstrainedOptimizer
-            self.turnover_optimizer = TurnoverConstrainedOptimizer(max_turnover_rate)
+            self.turnover_optimizer = TurnoverConstrainedOptimizer(max_turnover_rate, self.short_long_ratio)
         else:
             self.turnover_optimizer = None
 
@@ -760,19 +766,30 @@ class LongShortWeightStrategy(WeightStrategyBase):
         else:
             # 默认逻辑：无换手率约束
             long_stocks = score_sorted.iloc[:n_group].index.tolist()
-            short_stocks = score_sorted.iloc[-n_group:].index.tolist()
+            # 空头股票数量由参数short_long_ratio控制
+            n_short_group = int(n_group * self.short_long_ratio)
+            short_stocks = score_sorted.iloc[-n_short_group:].index.tolist()
             
         long_short_weight = np.zeros(len(universe))
         universe_index = {stock: i for i, stock in enumerate(universe)}
-        weight = self.long_short_total_risk_degree * 0.5 / n_group
+        # 计算多头和空头的权重
+        # 根据short_long_ratio调整权重分配，确保总权重为0
+        n_short_group = int(n_group * self.short_long_ratio)  # 空头品种数量由参数short_long_ratio控制
+        
+        # 计算权重，确保总权重为0
+        # 设多头每个品种权重为w，空头每个品种权重为-k*w
+        # 则总权重 = n_group*w - n_short_group*k*w = 0
+        # 解得：k = n_group/n_short_group = 1/short_long_ratio
+        long_weight = self.long_short_total_risk_degree / (2 * n_group)  # 多头每个品种的权重
+        short_weight = -long_weight / self.short_long_ratio  # 空头每个品种的权重
 
         for stock in long_stocks:
             idx = universe_index[stock]
-            long_short_weight[idx] = weight
+            long_short_weight[idx] = long_weight
 
         for stock in short_stocks:
             idx = universe_index[stock]
-            long_short_weight[idx] = -weight
+            long_short_weight[idx] = short_weight
 
         target_weight_position = {stock: weight for stock, weight in zip(universe, long_short_weight)}
 
