@@ -6,7 +6,6 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 from .base import BaseOptimizer
 
-
 class TurnoverConstrainedOptimizer(BaseOptimizer):
     """
     换手率约束优化器 - 基于品种数量比例的换手约束
@@ -117,11 +116,13 @@ class TurnoverConstrainedOptimizer(BaseOptimizer):
             short_count = len(last_short_stocks)
             raise ValueError(f"持仓状态不平衡：多头{long_count}只，空头{short_count}只")
         
-        # 检查当前持仓是否符合short_long_ratio比例
-        if last_long_stocks and last_short_stocks:
-            expected_short_count = int(len(last_long_stocks) * self.short_long_ratio)
-            if len(last_short_stocks) != expected_short_count:
-                raise ValueError(f"当前持仓不符合short_long_ratio比例：多头{len(last_long_stocks)}只，空头{len(last_short_stocks)}只，预期空头数量应为{expected_short_count}只（比例{self.short_long_ratio}）")
+        # # 检查当前持仓是否符合short_long_ratio比例
+        # if last_long_stocks and last_short_stocks:
+        #     expected_short_count = int(len(last_long_stocks) * self.short_long_ratio)
+        #     if len(last_short_stocks) != expected_short_count:
+        #         raise ValueError(f"当前持仓不符合short_long_ratio比例：多头{len(last_long_stocks)}只，"
+        #                          f"空头{len(last_short_stocks)}只，预期空头数量应为{expected_short_count}只"
+        #                          f"（比例{self.short_long_ratio}）")
         
         # 7. 如果没有持仓，直接返回理想股票列表
         if not last_long_stocks and not last_short_stocks:
