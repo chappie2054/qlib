@@ -667,6 +667,7 @@ class EnhancedIndexingStrategy(WeightStrategyBase):
 
         return target_weight_position
 
+
 class LongShortWeightStrategy(WeightStrategyBase):
     """
     多空分组权重策略（Long-Short Grouped Weighting Strategy）
@@ -706,7 +707,7 @@ class LongShortWeightStrategy(WeightStrategyBase):
         forbid_all_trade_at_limit=False,
         long_short_total_risk_degree=1,
         max_turnover_rate=None,  # 最大换手率，None表示不约束
-        short_long_ratio=2.0,  # 空头端品种数量与多头端品种数量的比例，默认为2.0
+        short_long_ratio=1.0,  # 空头端品种数量与多头端品种数量的比例，默认为1.0
         **kwargs,
     ):
         kwargs['risk_degree'] = long_short_total_risk_degree
@@ -823,9 +824,9 @@ class LongShortWeightStrategy(WeightStrategyBase):
         else:
             last_account_value = trade_account.portfolio_metrics.get_latest_account_value()
 
-        # 检查pred_start_time是否不是08:00:00
-        if pred_start_time.strftime("%H:%M:%S") != ("00:00:00" if self.trade_calendar.freq == "day" else "07:00:00"):
-            return TradeDecisionWO([], self)
+        # # 检查pred_start_time是否不是08:00:00
+        # if pred_start_time.strftime("%H:%M:%S") != ("00:00:00" if self.trade_calendar.freq == "day" else "07:00:00"):
+        #     return TradeDecisionWO([], self)
 
         self.hold_count += 1
 
