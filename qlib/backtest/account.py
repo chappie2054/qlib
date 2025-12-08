@@ -284,6 +284,7 @@ class Account:
         now_earning = (last_short_account_value - now_account_short_value) + (now_account_long_value - last_long_account_value)
         now_cost = self.accum_info.get_cost - last_total_cost
         now_account_value = last_account_value + now_earning - now_cost
+        self.current_position.position["now_account_value"] = now_account_value # 临时：适配多空中计算空头收益
         now_stock_value = now_account_long_value + now_account_short_value
         now_turnover = self.accum_info.get_turnover - last_total_turnover
 
@@ -302,7 +303,7 @@ class Account:
             long_account_value=now_account_long_value,
             short_account_value=now_account_short_value,
             cash=self.current_position.position["cash"],
-            return_rate=(now_earning + now_cost) / last_account_value,
+            return_rate=(now_earning - now_cost) / last_account_value,
             # here use earning to calculate return, position's view, earning consider cost, true return
             # in order to make same definition with original backtest in evaluate.py
             total_turnover=self.accum_info.get_turnover,
@@ -314,9 +315,9 @@ class Account:
 
     def update_hist_positions(self, trade_start_time: pd.Timestamp) -> None:
         """update history position"""
-        now_account_value = self.current_position.calculate_value()
+        # now_account_value = self.current_position.calculate_value()
         # set now_account_value to position
-        self.current_position.position["now_account_value"] = now_account_value
+        # self.current_position.position["now_account_value"] = now_account_value  # 临时：适配多空中计算空头收益，将这行上移
         self.current_position.update_weight_all()
         # update hist_positions
         # note use deepcopy
