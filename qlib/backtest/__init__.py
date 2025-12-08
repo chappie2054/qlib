@@ -166,7 +166,7 @@ def create_account_instance(
         position_dict=position_dict,
         pos_type=pos_type,
         leverage=leverage,
-        # freq="60min",
+        freq="60min",
         benchmark_config=(
             {}
             if benchmark is None
