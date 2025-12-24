@@ -61,7 +61,7 @@ def load_funding_rates_data(funding_rates_path: str = r"D:\temp\带时间间隔�
         raise
 
 
-def get_funding_rates_for_timestamp(funding_rates_df: pd.DataFrame, timestamp: pd.Timestamp, symbols: list) -> pd.Series:
+def get_funding_rates_for_timestamp(funding_rates_df: pd.DataFrame, timestamp: pd.Timestamp, symbols: list, use_case: str = 'optimizer') -> pd.Series:
     """
     获取指定时间截面和品种列表的资金费率数据
     
@@ -73,6 +73,10 @@ def get_funding_rates_for_timestamp(funding_rates_df: pd.DataFrame, timestamp: p
         时间戳
     symbols : list
         品种列表
+    use_case : str, optional
+        使用场景: 
+        - 'optimizer': 用于优化器资金费率约束（默认），只返回funding_rate_interval为'1小时'的品种资金费率
+        - 'portfolio': 用于组合资金费率计算，返回所有品种的资金费率
         
     Returns
     -------
@@ -92,7 +96,15 @@ def get_funding_rates_for_timestamp(funding_rates_df: pd.DataFrame, timestamp: p
         
         for symbol in common_symbols:
             if symbol in current_slice.index:
-                funding_rates.loc[symbol] = current_slice.loc[symbol, 'funding_rate']
+                # 检查使用场景
+                if use_case == 'optimizer':
+                    # 用于优化器资金费率约束，只处理funding_rate_interval为'1小时'的品种
+                    if current_slice.loc[symbol, 'funding_rate_interval'] == '1小时':
+                        funding_rates.loc[symbol] = current_slice.loc[symbol, 'funding_rate']
+                    # 否则资金费率设为0，不影响优化器计算
+                else:
+                    # 用于组合资金费率计算，返回所有品种的资金费率
+                    funding_rates.loc[symbol] = current_slice.loc[symbol, 'funding_rate']
         
         return funding_rates
         
@@ -142,7 +154,8 @@ class BacktestSimulator:
                  optimizer: ConstrainedPortfolioOptimizer,
                  initial_capital: float = 1000000.0,
                  funding_rates_data: Optional[pd.DataFrame] = None,
-                 price_data: Optional[pd.DataFrame] = None):
+                 price_data: Optional[pd.DataFrame] = None,
+                 commission_rate: float = 0.0005):
         """
         初始化回测模拟器
         
@@ -156,6 +169,8 @@ class BacktestSimulator:
             资金费率数据，如果提供则使用真实资金费率，否则使用0
         price_data : pd.DataFrame, optional
             价格数据，用于计算收益率，格式为MultiIndex[datetime, instrument]，columns=['open', 'close']
+        commission_rate : float, optional
+            手续费率，默认单边万分之五
         """
         self.optimizer = optimizer
         self.initial_capital = initial_capital
@@ -163,6 +178,7 @@ class BacktestSimulator:
         self.funding_rates_data = funding_rates_data
         self.price_data = price_data
         self.returns_data = None  # 预计算的收益率数据
+        self.commission_rate = commission_rate  # 手续费率，单边万分之五
         
         # 记录历史
         self.portfolio_history = []
@@ -405,9 +421,13 @@ class BacktestSimulator:
             return 0.0
         
         try:
-            # 对齐权重 - 以新权重的索引为基准
-            aligned_current = self.current_weights.reindex(new_weights.index, fill_value=0.0)
-            aligned_new = new_weights
+            # 对齐权重 - 使用两个权重列表的并集作为基准，确保下架品种也被计算
+            all_symbols = self.current_weights.index.union(new_weights.index)
+            
+            # 对齐当前权重到所有品种，下架品种保留当前权重
+            aligned_current = self.current_weights.reindex(all_symbols, fill_value=0.0)
+            # 对齐新权重到所有品种，新增品种权重为0
+            aligned_new = new_weights.reindex(all_symbols, fill_value=0.0)
             
             # 计算换手率（两个序列的绝对差值之和）
             turnover = (aligned_new - aligned_current).abs().sum()
@@ -425,7 +445,7 @@ class BacktestSimulator:
     
     def run_backtest(self, 
                     pred_df: pd.DataFrame,
-                    rebalance_freq: str = '1H',
+                    rebalance_freq: str = 'hour',
                     start_date: Optional[str] = None,
                     end_date: Optional[str] = None,
                     verbose: bool = True,
@@ -516,7 +536,9 @@ class BacktestSimulator:
             'long_count': [],
             'short_count': [],
             'gross_exposure': [],
-            'optimization_stage': []
+            'optimization_stage': [],
+            'funding_cost': [],
+            'commission_cost': []
         }
         
         # 使用进度条显示回测进度
@@ -529,32 +551,31 @@ class BacktestSimulator:
         for i, timestamp in enumerate(time_index):
             status = ""
             try:
-                # 获取该时间截面的因子得分
-                factor_scores = self.get_time_slice_data(pred_df, timestamp)
-                
-                if len(factor_scores) == 0:
-                    status = "[无数据]"
-                    failed_optimizations += 1
-                
-                # 记录上一期权重
-                previous_weights = self.current_weights.copy() if self.current_weights is not None else pd.Series(0.0, index=factor_scores.index)
-                
-                # 计算因子得分排名百分比
-                # 排名越高，百分比越大，1.0表示最高，0.0表示最低
-                factor_rank = factor_scores.rank(method='dense', ascending=False)
-                total_assets = len(factor_scores)
-                factor_rank_pct = (total_assets - factor_rank + 1) / total_assets
-                
-                # 准备资金费率数据
-                if self.funding_rates_data is not None:
-                    # 使用真实的资金费率数据
-                    try:
-                        funding_rates = get_funding_rates_for_timestamp(
-                            self.funding_rates_data, timestamp, factor_scores.index.tolist()
-                        )
-                    except Exception as e:
-                        logger.error(f"获取资金费率数据失败 {timestamp}: {e}")
-                        status = "[资金费率错误]"
+                # 对于优化器，使用上一期的数据
+                if i == 0:
+                    # 第一个时间截面，没有上一期数据，按照实际应用处理：
+                    # 1. 初始化权重为0
+                    # 2. 跳过优化，直接进入下一个时间截面
+                    logger.info(f"第一个时间截面 {timestamp}，没有上一期数据，初始化权重为0并跳过优化")
+                    # 初始化权重为0
+                    self.current_weights = pd.Series(0.0, index=pred_df.loc[timestamp].index) if len(pred_df.loc[timestamp]) > 0 else pd.Series(0.0)
+                    # 更新进度条
+                    if HAS_TQDM:
+                        progress_bar.set_description(f"截面 {i+1}/{len(time_index)} [初始权重]")
+                        progress_bar.update(1)
+                    else:
+                        print(f"\r回测进度: {i+1}/{len(time_index)} [初始权重]", end="")
+                    # 跳过当前循环，进入下一个时间截面
+                    continue
+                else:
+                    # 获取上一期时间戳
+                    prev_timestamp = time_index[i-1]
+                    
+                    # 使用上一期的因子得分
+                    factor_scores = self.get_time_slice_data(pred_df, prev_timestamp)
+                    
+                    if len(factor_scores) == 0:
+                        status = "[无数据]"
                         failed_optimizations += 1
                         # 更新进度条
                         if HAS_TQDM:
@@ -563,9 +584,37 @@ class BacktestSimulator:
                         else:
                             print(f"\r回测进度: {i+1}/{len(time_index)} {status}", end="")
                         continue
-                else:
-                    # 使用默认的0资金费率
-                    funding_rates = pd.Series(0.0, index=factor_scores.index)
+                    
+                    # 记录上一期权重
+                    previous_weights = self.current_weights.copy() if self.current_weights is not None else pd.Series(0.0, index=factor_scores.index)
+                    
+                    # 计算因子得分排名百分比
+                    # 排名越高，百分比越大，1.0表示最高，0.0表示最低
+                    factor_rank = factor_scores.rank(method='dense', ascending=False)
+                    total_assets = len(factor_scores)
+                    factor_rank_pct = (total_assets - factor_rank + 1) / total_assets
+                    
+                    # 准备上一期的资金费率数据
+                    if self.funding_rates_data is not None:
+                        # 使用真实的资金费率数据
+                        try:
+                            funding_rates = get_funding_rates_for_timestamp(
+                                self.funding_rates_data, prev_timestamp, factor_scores.index.tolist(), use_case='optimizer'
+                            )
+                        except Exception as e:
+                            logger.error(f"获取上一期资金费率数据失败 {prev_timestamp}: {e}")
+                            status = "[资金费率错误]"
+                            failed_optimizations += 1
+                            # 更新进度条
+                            if HAS_TQDM:
+                                progress_bar.set_description(f"截面 {i+1}/{len(time_index)} {status}")
+                                progress_bar.update(1)
+                            else:
+                                print(f"\r回测进度: {i+1}/{len(time_index)} {status}", end="")
+                            continue
+                    else:
+                        # 使用默认的0资金费率
+                        funding_rates = pd.Series(0.0, index=factor_scores.index)
                 
                 # 执行优化
                 try:
@@ -585,11 +634,32 @@ class BacktestSimulator:
                         # 计算组合收益率（如果价格数据可用）- 必须在更新权重之前！
                         portfolio_return = 0.0
                         if self.returns_data is not None:
-                            # 计算组合收益率: w^T * r，使用上一期的权重
-                            if self.current_weights is not None:
-                                # 获取当前截面的收益率（用于计算上一期持仓在当前期的收益）
-                                current_returns = self.get_returns_for_timestamp(timestamp, self.current_weights.index.tolist())
-                                portfolio_return = (self.current_weights * current_returns).sum()
+                            # 计算组合收益率: w^T * r，使用当前期的权重
+                            if optimized_weights is not None:
+                                # 获取当前截面的收益率（用于计算当前期的收益）
+                                current_returns = self.get_returns_for_timestamp(timestamp, optimized_weights.index.tolist())
+                                portfolio_return = (optimized_weights * current_returns).sum()
+                                
+                                # 计算资金费率成本并从组合收益率中扣除
+                                if self.funding_rates_data is not None:
+                                    try:
+                                        # 获取当前期的资金费率数据（与当前期权重对齐）
+                                        funding_rates = get_funding_rates_for_timestamp(
+                                            self.funding_rates_data, timestamp, optimized_weights.index.tolist(), use_case='portfolio'
+                                        )
+                                        # 资金费率成本 = 当前期权重 * 当前期资金费率
+                                        funding_cost = (optimized_weights * funding_rates).sum()
+                                        # 将资金费率成本从组合收益率中扣除
+                                        portfolio_return += funding_cost
+                                    except Exception as e:
+                                        logger.warning(f"获取资金费率数据失败 {timestamp}: {e}")
+                                        # 资金费率成本计算失败，不影响正常回测，继续执行
+                        
+                        # 计算手续费成本 - 基于换手率，单边万分之五，多空都收取
+                        # 换手率代表了调仓的比例，也就是需要收取手续费的部分
+                        commission_cost = turnover * self.commission_rate
+                        # 从组合收益率中扣除手续费
+                        portfolio_return -= commission_cost
                         
                         # 更新当前权重为新权重 - 必须在计算收益率之后！
                         self.current_weights = optimized_weights.copy()
@@ -632,6 +702,9 @@ class BacktestSimulator:
                         # 对齐factor_rank_pct到当前的品种列表
                         aligned_factor_rank_pct = factor_rank_pct.reindex(optimized_weights.index, fill_value=0.0)
                         
+                        # 初始化funding_cost，如果没有计算则为0
+                        funding_cost_value = funding_cost if 'funding_cost' in locals() else 0.0
+                        
                         for instrument in optimized_weights.index:
                             results_data['timestamp'].append(timestamp)
                             results_data['instrument'].append(instrument)
@@ -648,6 +721,8 @@ class BacktestSimulator:
                             results_data['short_count'].append(portfolio_metrics.get('short_count', 0))
                             results_data['gross_exposure'].append(portfolio_metrics.get('gross_exposure', 0))
                             results_data['optimization_stage'].append(optimization_stage)
+                            results_data['funding_cost'].append(funding_cost_value)
+                            results_data['commission_cost'].append(commission_cost)
                         
                         successful_optimizations += 1
                         status = "[成功]"
@@ -809,22 +884,26 @@ class BacktestSimulator:
                 stats['max_portfolio_return'] = np.max(portfolio_returns)
                 stats['min_portfolio_return'] = np.min(portfolio_returns)
                 
-                # 根据调仓频率计算年化收益率和夏普比率
+                # 根据调仓频率计算年化收益率和夏普比率（考虑加密货币市场7*24小时交易特点）
                 if rebalance_freq == 'daily':
-                    annualization_factor = 252
+                    annualization_factor = 365  # 加密货币市场7*24小时，每年365天
                 elif rebalance_freq == 'weekly':
-                    annualization_factor = 52
+                    annualization_factor = 365 / 7  # 加密货币市场7*24小时，每年约52.14周
                 elif rebalance_freq == 'monthly':
-                    annualization_factor = 12
+                    annualization_factor = 365 / 30  # 加密货币市场7*24小时，每年约12.17月
+                elif rebalance_freq == 'hour':
+                    annualization_factor = 365 * 24  # 加密货币市场7*24小时，每年8760小时
                 else:
-                    annualization_factor = 252  # 默认按日计算
+                    annualization_factor = 365 * 24  # 默认按小时计算，每年8760小时
                 
                 # 计算年化收益率
                 stats['annualized_return'] = stats['avg_portfolio_return'] * annualization_factor
                 # 计算年化波动率
                 stats['annualized_volatility'] = stats['std_portfolio_return'] * np.sqrt(annualization_factor)
-                # 计算年化夏普比率
-                stats['sharpe_ratio'] = stats['annualized_return'] / stats['annualized_volatility'] if stats['annualized_volatility'] > 0 else 0
+                
+                # 计算年化夏普比率（考虑无风险利率，默认无风险利率为0）
+                risk_free_rate = 0.0  # 可以根据需要调整无风险利率
+                stats['sharpe_ratio'] = (stats['annualized_return'] - risk_free_rate) / stats['annualized_volatility'] if stats['annualized_volatility'] > 0 else 0
                 
                 # 计算最大回撤
                 cumulative_returns = np.cumprod(1 + np.array(portfolio_returns))
@@ -945,8 +1024,9 @@ def constrained_optimizer_backtest(max_periods: int = None):
         'weight_sum': 0.0,                 # 权重和 = 0（截面中性）
         'norm_type': 'l1',                 # L1范数约束
         'norm_bound': 1.0,                 # ||w||_1 ≤ 1，控制总杠杆率
-        # 'turnover': 0.1,                   # 换手率约束 10%
-        'turnover': 1,                   # 换手率约束 10%
+        'turnover': 0.01,                   # 换手率约束 10%
+        # 'turnover': 0.2,                   # 换手率约束 10%
+        # 'turnover': 1,                   # 不做换手率约束
     }
     
     logger.info(f"约束配置: {constraints_config}")
@@ -968,10 +1048,6 @@ def constrained_optimizer_backtest(max_periods: int = None):
     
     # 创建回测模拟器
     price_data = pd.read_parquet(r"D:\temp\回测用的品种close_open\open_close.parquet")
-    
-    # 转换价格数据的时间：UTC时间 + 8小时 = UTC+8时间（与预测数据时间一致）
-    # 保持时间戳为naive datetime，只调整时间值
-    price_data.index = price_data.index.set_levels(price_data.index.levels[0] + pd.Timedelta(hours=8), level=0)
     
     backtest_simulator = BacktestSimulator(
         optimizer=optimizer,
@@ -998,7 +1074,7 @@ def constrained_optimizer_backtest(max_periods: int = None):
         
         backtest_stats = backtest_simulator.run_backtest(
             pred_df=pred_df,
-            rebalance_freq='1H',
+            rebalance_freq='hour',
             verbose=True,
             max_periods=max_periods
         )
@@ -1011,6 +1087,7 @@ def constrained_optimizer_backtest(max_periods: int = None):
         if 'total_return' in backtest_stats:
             logger.info(f"\n📊 收益表现:")
             logger.info(f"  总收益率: {backtest_stats['total_return']*100:.2f}%")
+            logger.info(f"  年化收益率: {backtest_stats['annualized_return']*100:.2f}%")
             logger.info(f"  夏普比率: {backtest_stats['sharpe_ratio']:.4f}")
             logger.info(f"  最大回撤: {backtest_stats['max_drawdown']*100:.2f}%")
             logger.info(f"  胜率: {backtest_stats['win_rate']*100:.2f}%")
