@@ -264,41 +264,42 @@ class ConstrainedPortfolioOptimizer(BaseOptimizer):
         
         # 优化阶段配置：只放宽换手率约束，其他约束保持不变
         original_turnover = self.constraints_config.get('turnover', None)
+        norm_bound = self.constraints_config.get('norm_bound')  # norm_bound是必须指定的
         
-        stages = [
-            {
-                'name': '换手率放宽1倍',
+        stages = []
+        
+        if original_turnover is not None:
+            # 逐步放宽换手率约束，从1倍开始，直到original_turnover * 倍率 > norm_bound
+            max_stage = 100  # 防止无限循环的安全边界
+            for multiplier in range(1, max_stage + 1):
+                # 计算当前倍率下的换手率约束
+                current_turnover = original_turnover * multiplier
+                
+                # 如果当前换手率超过norm_bound，则停止
+                if current_turnover > norm_bound:
+                    break
+                
+                # 添加当前阶段，保留所有约束，只修改换手率
+                stages.append({
+                    'name': f'换手率放宽{multiplier}倍',
+                    'weight_bounds': self.constraints_config['weight_bounds'],
+                    'weight_sum': self.constraints_config['weight_sum'],
+                    'norm_bound': norm_bound,
+                    'turnover_bound': current_turnover,
+                    'description': f'换手率放宽{multiplier}倍'
+                })
+            
+            # 注意：不添加完全放开约束的阶段，只到接近norm_bound的位置
+        else:
+            # 如果没有原始换手率约束，只使用一个阶段
+            stages.append({
+                'name': '无换手率约束',
                 'weight_bounds': self.constraints_config['weight_bounds'],
                 'weight_sum': self.constraints_config['weight_sum'],
-                'norm_bound': self.constraints_config.get('norm_bound', None),
-                'turnover_bound': original_turnover * 1 if original_turnover is not None else None,
-                'description': '换手率放宽1倍'
-            },
-            {
-                'name': '换手率放宽2倍',
-                'weight_bounds': self.constraints_config['weight_bounds'],
-                'weight_sum': self.constraints_config['weight_sum'],
-                'norm_bound': self.constraints_config.get('norm_bound', None),
-                'turnover_bound': original_turnover * 2 if original_turnover is not None else None,
-                'description': '换手率放宽2倍'
-            },
-            {
-                'name': '换手率放宽3倍',
-                'weight_bounds': self.constraints_config['weight_bounds'],
-                'weight_sum': self.constraints_config['weight_sum'],
-                'norm_bound': self.constraints_config.get('norm_bound', None),
-                'turnover_bound': original_turnover * 3 if original_turnover is not None else None,
-                'description': '换手率放宽3倍'
-            },
-            {
-                'name': '换手率不做限制',
-                'weight_bounds': self.constraints_config['weight_bounds'],
-                'weight_sum': self.constraints_config['weight_sum'],
-                'norm_bound': self.constraints_config.get('norm_bound', None),
-                'turnover_bound': None,  # 换手率不做限制
-                'description': '换手率不做限制'
-            }
-        ]
+                'norm_bound': norm_bound,
+                'turnover_bound': None,
+                'description': '无换手率约束'
+            })
         
         total_attempts = 0
         failed_stages = []
