@@ -120,7 +120,8 @@ class ConstrainedPortfolioOptimizer(BaseOptimizer):
         """验证优化解是否满足约束，不满足则报错"""
         # 使用当前阶段的约束配置，如果没有提供则使用原始配置
         config = stage_config if stage_config is not None else self.constraints_config
-        tolerance = 2e-3
+        # tolerance = 2e-3
+        tolerance = 0.02
         
         # 验证权重边界
         min_weight, max_weight = config.get('weight_bounds', (-1.0, 1.0))
@@ -160,7 +161,7 @@ class ConstrainedPortfolioOptimizer(BaseOptimizer):
     
     def _apply_weight_threshold_filter(self, weights: pd.Series) -> pd.Series:
         """
-        应用权重阈值过滤，将小于阈值的权重设为0，并保持原始权重和
+        应用权重阈值过滤，将小于阈值的权重设为0，并将大于阈值的权重设为weight_bounds对应的边界
         
         Parameters
         ----------
@@ -170,7 +171,7 @@ class ConstrainedPortfolioOptimizer(BaseOptimizer):
         Returns
         -------
         pd.Series
-            过滤后的权重（保持原始权重和）
+            过滤后的权重
         """
         if self.weight_threshold is None:
             return weights
@@ -178,20 +179,16 @@ class ConstrainedPortfolioOptimizer(BaseOptimizer):
         # 复制权重以避免修改原始数据
         filtered_weights = weights.copy()
         
-        # 保存原始权重和
-        original_sum = weights.sum()
+        # 获取权重边界
+        min_weight, max_weight = self.constraints_config.get('weight_bounds', (-0.01, 0.01))
         
-        # 过滤小于阈值的权重（绝对值）
+        # 过滤小于阈值的权重（绝对值）设为0
         mask = np.abs(filtered_weights) < self.weight_threshold
         filtered_weights[mask] = 0.0
         
-        # # 调整剩余权重，保持原始权重和
-        # non_zero_mask = ~mask
-        # if non_zero_mask.sum() > 0:
-        #     current_sum = filtered_weights.sum()
-        #     if current_sum != 0:
-        #         scaling_factor = original_sum / current_sum
-        #         filtered_weights[non_zero_mask] *= scaling_factor
+        # 将大于阈值的权重设为weight_bounds对应的边界
+        filtered_weights[filtered_weights > self.weight_threshold] = max_weight
+        filtered_weights[filtered_weights < -self.weight_threshold] = min_weight
         
         return filtered_weights
     

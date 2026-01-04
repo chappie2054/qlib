@@ -95,16 +95,15 @@ def get_funding_rates_for_timestamp(funding_rates_df: pd.DataFrame, timestamp: p
         common_symbols = set(available_symbols) & set(symbols)
         
         for symbol in common_symbols:
-            if symbol in current_slice.index:
-                # 检查使用场景
-                if use_case == 'optimizer':
-                    # 用于优化器资金费率约束，只处理funding_rate_interval为'1小时'的品种
-                    if current_slice.loc[symbol, 'funding_rate_interval'] == '1小时':
-                        funding_rates.loc[symbol] = current_slice.loc[symbol, 'funding_rate']
-                    # 否则资金费率设为0，不影响优化器计算
-                else:
-                    # 用于组合资金费率计算，返回所有品种的资金费率
+            # 检查使用场景
+            if use_case == 'optimizer':
+                # 用于优化器资金费率约束，只处理funding_rate_interval为'1小时'的品种
+                if current_slice.loc[symbol, 'funding_rate_interval'] == '1小时':
                     funding_rates.loc[symbol] = current_slice.loc[symbol, 'funding_rate']
+                # 否则资金费率设为0，不影响优化器计算
+            else:
+                # 用于组合资金费率计算，返回所有品种的资金费率
+                funding_rates.loc[symbol] = current_slice.loc[symbol, 'funding_rate']
         
         return funding_rates
         
@@ -226,8 +225,8 @@ class BacktestSimulator:
     
     def _calculate_returns_data(self):
         """
-        预计算收益率数据：基于open价格计算上一期到当前的收益率
-        收益率 = (当前open - 上一期open) / 上一期open
+        预计算收益率数据：基于open价格计算当前期到下一期的收益率
+        收益率 = (下一期open - 当前open) / 当前open
         """
         try:
             logger.info("开始预计算收益率数据...")
@@ -586,7 +585,7 @@ class BacktestSimulator:
                         continue
                     
                     # 记录上一期权重
-                    previous_weights = self.current_weights.copy() if self.current_weights is not None else pd.Series(0.0, index=factor_scores.index)
+                    previous_weights = self.current_weights.copy()
                     
                     # 计算因子得分排名百分比
                     # 排名越高，百分比越大，1.0表示最高，0.0表示最低
@@ -618,11 +617,24 @@ class BacktestSimulator:
                 
                 # 执行优化
                 try:
+                    # 保存原有的换手率约束值
+                    original_turnover = self.optimizer.constraints_config.get('turnover')
+                    
+                    # 当i=1时（第一次优化器计算），临时允许turnover=1
+                    if i == 1:
+                        logger.info(f"第一次优化计算，临时将换手率约束调整为1")
+                        self.optimizer.constraints_config['turnover'] = 1.0
+                    
                     optimized_weights, optimization_info = self.optimizer(
                         factor_scores=factor_scores,
                         funding_rates=funding_rates,
                         current_weights=self.current_weights
                     )
+                    
+                    # 恢复原有的换手率约束值
+                    if i == 1:
+                        self.optimizer.constraints_config['turnover'] = original_turnover
+                        logger.info(f"第一次优化计算完成，恢复原有换手率约束值: {original_turnover}")
                     
                     if optimized_weights is not None and len(optimized_weights) > 0:
                         # 计算换手率
@@ -654,7 +666,7 @@ class BacktestSimulator:
                                     except Exception as e:
                                         logger.warning(f"获取资金费率数据失败 {timestamp}: {e}")
                                         # 资金费率成本计算失败，不影响正常回测，继续执行
-                        
+
                         # 计算手续费成本 - 基于换手率，单边万分之五，多空都收取
                         # 换手率代表了调仓的比例，也就是需要收取手续费的部分
                         commission_cost = turnover * self.commission_rate
@@ -983,34 +995,13 @@ def constrained_optimizer_backtest(max_periods: int = None):
     # 检查数据文件是否存在
     if not os.path.exists(data_path):
         logger.error(f"数据文件不存在: {data_path}")
-        logger.info("创建模拟数据进行测试...")
-        
-        # 创建模拟数据
-        np.random.seed(42)
-        dates = pd.date_range('2023-06-14', periods=10, freq='1H')  # 10个小时用于测试
-        instruments = [f"{i:04d}USDT" for i in range(20)]  # 20个品种
-        
-        index_tuples = []
-        values = []
-        
-        for date in dates:
-            for instrument in instruments:
-                index_tuples.append((date, instrument))
-                values.append(np.random.randn())
-        
-        pred_df = pd.DataFrame(
-            {'score': values},
-            index=pd.MultiIndex.from_tuples(index_tuples, names=['datetime', 'instrument'])
-        )
-        
-        logger.info(f"模拟数据创建完成，形状: {pred_df.shape}")
-        
+        raise FileNotFoundError(f"数据文件不存在: {data_path}")
+
     else:
         logger.info("使用真实数据进行测试")
         try:
             pred_df = pd.read_parquet(data_path)
             # 使用完整数据集进行回测
-            logger.info(f"真实数据加载完成，数据形状: {pred_df.shape}")
             logger.info(f"时间范围: {pred_df.index.get_level_values(0).min()} 到 {pred_df.index.get_level_values(0).max()}")
             logger.info(f"股票数量: {pred_df.index.get_level_values(1).nunique()}")
         except Exception as e:
@@ -1020,14 +1011,17 @@ def constrained_optimizer_backtest(max_periods: int = None):
     # 配置约束条件 - 截面中性策略
     constraints_config = {
         'weight_bounds': (-0.01, 0.01),      # 权重边界：-1% 到 +1%
+        # 'weight_bounds': (-0.02, 0.02),      # 权重边界：-2% 到 +2%
         # 'weight_bounds': (-0.05, 0.05),      # 权重边界：-5% 到 +5%
         'weight_sum': 0.0,                 # 权重和 = 0（截面中性）
         'norm_type': 'l1',                 # L1范数约束
         'norm_bound': 1.0,                 # ||w||_1 ≤ 1，控制总杠杆率
-        'turnover': 0.01,                   # 换手率约束 10%
-        # 'turnover': 0.2,                   # 换手率约束 10%
+        'turnover': 0.01,                   # 换手率约束 1%
+        # 'turnover': 0.2,                   # 换手率约束 20%
         # 'turnover': 1,                   # 不做换手率约束
     }
+
+
     
     logger.info(f"约束配置: {constraints_config}")
     
@@ -1037,24 +1031,33 @@ def constrained_optimizer_backtest(max_periods: int = None):
         objective_type="max_factor_score",
         solver=None,  # 使用默认求解器
         solver_kwargs={'verbose': False},
-        weight_threshold=0.001,  # 过滤绝对值小于0.001的权重（进一步放宽阈值）
+        # weight_threshold=0.001,  # 过滤绝对值小于0.001的权重（进一步放宽阈值）
+        weight_threshold=0.005,  # 过滤绝对值小于0.005的权重（进一步放宽阈值）
         enable_funding_rate_constraint=True # 启用资金费率约束
     )
-    
+
     logger.info("优化器创建完成")
-    
+
     # 加载资金费率数据
     funding_rates_data = load_funding_rates_data()
-    
+
     # 创建回测模拟器
     price_data = pd.read_parquet(r"D:\temp\回测用的品种close_open\open_close.parquet")
-    
-    backtest_simulator = BacktestSimulator(
-        optimizer=optimizer,
-        initial_capital=1000000.0,
-        funding_rates_data=funding_rates_data,
-        price_data=price_data
-    )
+
+    # 回测模拟的参数配置
+    backtest_simulator_params = {
+        'optimizer': optimizer,
+        'initial_capital': 1000000.0,
+        'funding_rates_data': funding_rates_data,
+        'price_data': price_data,
+        # 'commission_rate': 0.0005
+        'commission_rate': 0.001
+
+    }
+
+    logger.info(f"回测模拟参数配置: 单边手续费={backtest_simulator_params['commission_rate']}, 初始资金={backtest_simulator_params['initial_capital']}")
+
+    backtest_simulator = BacktestSimulator(**backtest_simulator_params)
     
     # 运行全量回测
     try:
