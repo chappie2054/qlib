@@ -442,7 +442,7 @@ class Exchange:
         if not self.check_order(order):
             order.deal_amount = 0.0
             # using np.nan instead of None to make it more convenient to show the value in format string
-            self.logger.debug(f"Order failed due to trading limitation: {order}")
+            self.logger.info(f"Order failed due to trading limitation: {order}")
             return 0.0, 0.0, np.nan
 
         if trade_account is not None and position is not None:
@@ -646,8 +646,8 @@ class Exchange:
         random.shuffle(sorted_ids)
         for stock_id in sorted_ids:
             # Do not generate order for the non-tradable stocks
-            if not self.is_stock_tradable(stock_id=stock_id, start_time=start_time, end_time=end_time):
-                continue
+            # if not self.is_stock_tradable(stock_id=stock_id, start_time=start_time, end_time=end_time):
+            #     continue
 
             target_amount = target_position.get(stock_id, 0)
             current_amount = current_position.get(stock_id, 0)

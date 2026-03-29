@@ -281,8 +281,6 @@ class LongShortOrderGenWOInteract(OrderGenerator):
         amount_dict = {}
         for stock_id in target_weight_position:
             if trade_exchange.is_stock_tradable(
-                    stock_id=stock_id, start_time=trade_start_time, end_time=trade_end_time
-            ) and trade_exchange.is_stock_tradable(
                 stock_id=stock_id, start_time=pred_start_time, end_time=pred_end_time
             ):
                 amount_dict[stock_id] = (

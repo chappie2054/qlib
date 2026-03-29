@@ -749,6 +749,14 @@ class LongShortWeightStrategy(WeightStrategyBase):
         universe = score.index.tolist()
 
         score = score.squeeze()
+        for stock in score.index.tolist():
+            if not self.trade_exchange.is_stock_tradable(stock, start_time=trade_start_time + pd.Timedelta(hours=1), end_time=trade_end_time + pd.Timedelta(hours=1)):
+                # self.logger.warning(f"当前持仓品种 {stock} 不在 universe 中")
+                self.logger.warning(f"当前预测列表中 {stock} 不可再交易，将从评分中移除")
+                score = score.drop(stock)
+        if score.empty:
+            self.logger.warning(f"当前预测列表为空")
+            return {}
         score_sorted = score.sort_values(ascending=False)
         n_total = len(score_sorted)
         n_group = max(int(n_total * self.percentageByGroup), 1)  # 至少一个
@@ -796,8 +804,9 @@ class LongShortWeightStrategy(WeightStrategyBase):
 
         # 处理当前持仓中股票不在universe中的情况
         for stock in current.get_stock_list():
-            if stock not in universe:
-                self.logger.warning(f"当前持仓股票 {stock} 不在 universe 中")
+            if not self.trade_exchange.is_stock_tradable(stock, start_time=trade_start_time + pd.Timedelta(hours=1), end_time=trade_end_time + pd.Timedelta(hours=1)):
+                # self.logger.warning(f"当前持仓品种 {stock} 不在 universe 中")
+                self.logger.warning(f"当前持仓品种 {stock} 不再可交易")
                 target_weight_position[stock] = 0
 
         if self.verbose:

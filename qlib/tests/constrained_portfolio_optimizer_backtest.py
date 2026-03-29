@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def load_funding_rates_data(funding_rates_path: str = r"D:\temp\带时间间隔的历史资金费率数据-修复编码-all_data.parquet") -> pd.DataFrame:
+# def load_funding_rates_data(funding_rates_path: str = r"D:\temp\带时间间隔的历史资金费率数据-修复编码-all_data.parquet") -> pd.DataFrame:
+def load_funding_rates_data(funding_rates_path: str = r'D:\temp\带时间间隔的历史资金费率数据-修复编码-all_data_2026-03-07.parquet') -> pd.DataFrame:
     """
     加载资金费率数据
     
@@ -225,21 +226,21 @@ class BacktestSimulator:
     
     def _calculate_returns_data(self):
         """
-        预计算收益率数据：基于open价格计算当前期到下一期的收益率
-        收益率 = (下一期open - 当前open) / 当前open
+        预计算收益率数据：基于close价格计算当前期到下一期的收益率
+        收益率 = (下一期close - 当前close) / 当前close
         """
         try:
             logger.info("开始预计算收益率数据...")
             
-            # 按品种分组，计算每个品种的open价格变化率
+            # 按品种分组，计算每个品种的close价格变化率
             returns_list = []
             
             for symbol in self.price_data.index.get_level_values(1).unique():
                 symbol_data = self.price_data.loc[pd.IndexSlice[:, symbol], :]
                 symbol_data = symbol_data.sort_index()
                 
-                # 计算open价格的当期收益率（当前到下一期的变化率）
-                symbol_returns = symbol_data['open'].pct_change().shift(-1)  # 移后一期，确保t对应t到t+1的收益率
+                # 计算close价格的当期收益率（当前到下一期的变化率）
+                symbol_returns = symbol_data['close'].pct_change().shift(-1)
                 symbol_returns.name = 'return'
                 
                 returns_list.append(symbol_returns)
@@ -260,7 +261,7 @@ class BacktestSimulator:
     
     def get_returns_for_timestamp(self, timestamp: pd.Timestamp, symbols: list) -> pd.Series:
         """
-        获取指定时间截面和品种列表的当期收益率数据（当前open到下一期open的变化率）
+        获取指定时间截面和品种列表的当期收益率数据（当前close到下一期close的变化率）
         
         Parameters
         ----------
@@ -272,7 +273,7 @@ class BacktestSimulator:
         Returns
         -------
         pd.Series
-            当前时间截面的收益率数据（当前到下一期的变化率），缺失的品种收益率为0
+            当前时间截面的收益率数据（当前close到下一期close的变化率），缺失的品种收益率为0
         """
         try:
             if self.returns_data is None:
@@ -560,10 +561,10 @@ class BacktestSimulator:
                     self.current_weights = pd.Series(0.0, index=pred_df.loc[timestamp].index) if len(pred_df.loc[timestamp]) > 0 else pd.Series(0.0)
                     # 更新进度条
                     if HAS_TQDM:
-                        progress_bar.set_description(f"截面 {i+1}/{len(time_index)} [初始权重]")
+                        progress_bar.set_description(f"截面 {i+1}/{len(time_index)} {timestamp} [初始权重]")
                         progress_bar.update(1)
                     else:
-                        print(f"\r回测进度: {i+1}/{len(time_index)} [初始权重]", end="")
+                        print(f"\r回测进度: {i+1}/{len(time_index)} {timestamp} [初始权重]", end="")
                     # 跳过当前循环，进入下一个时间截面
                     continue
                 else:
@@ -578,10 +579,10 @@ class BacktestSimulator:
                         failed_optimizations += 1
                         # 更新进度条
                         if HAS_TQDM:
-                            progress_bar.set_description(f"截面 {i+1}/{len(time_index)} {status}")
+                            progress_bar.set_description(f"截面 {i+1}/{len(time_index)} {prev_timestamp} {status}")
                             progress_bar.update(1)
                         else:
-                            print(f"\r回测进度: {i+1}/{len(time_index)} {status}", end="")
+                            print(f"\r回测进度: {i+1}/{len(time_index)} {prev_timestamp} {status}", end="")
                         continue
                     
                     # 记录上一期权重
@@ -606,10 +607,10 @@ class BacktestSimulator:
                             failed_optimizations += 1
                             # 更新进度条
                             if HAS_TQDM:
-                                progress_bar.set_description(f"截面 {i+1}/{len(time_index)} {status}")
+                                progress_bar.set_description(f"截面 {i+1}/{len(time_index)} {prev_timestamp} {status}")
                                 progress_bar.update(1)
                             else:
-                                print(f"\r回测进度: {i+1}/{len(time_index)} {status}", end="")
+                                print(f"\r回测进度: {i+1}/{len(time_index)} {prev_timestamp} {status}", end="")
                             continue
                     else:
                         # 使用默认的0资金费率
@@ -622,13 +623,14 @@ class BacktestSimulator:
                     
                     # 当i=1时（第一次优化器计算），临时允许turnover=1
                     if i == 1:
-                        logger.info(f"第一次优化计算，临时将换手率约束调整为1")
+                        logger.info("第一次优化计算，临时将换手率约束调整为1")
                         self.optimizer.constraints_config['turnover'] = 1.0
                     
                     optimized_weights, optimization_info = self.optimizer(
                         factor_scores=factor_scores,
                         funding_rates=funding_rates,
-                        current_weights=self.current_weights
+                        current_weights=self.current_weights,
+                        timestamp=prev_timestamp
                     )
                     
                     # 恢复原有的换手率约束值
@@ -643,13 +645,17 @@ class BacktestSimulator:
                         # 计算投资组合指标
                         portfolio_metrics = self.calculate_portfolio_metrics(optimized_weights)
                         
+                        # 获取当前截面的收益率数据
+                        current_returns = pd.Series(0.0, index=optimized_weights.index)
+                        if self.returns_data is not None:
+                            # 获取当前截面的收益率
+                            current_returns = self.get_returns_for_timestamp(timestamp, optimized_weights.index.tolist())
+                        
                         # 计算组合收益率（如果价格数据可用）- 必须在更新权重之前！
                         portfolio_return = 0.0
                         if self.returns_data is not None:
                             # 计算组合收益率: w^T * r，使用当前期的权重
                             if optimized_weights is not None:
-                                # 获取当前截面的收益率（用于计算当前期的收益）
-                                current_returns = self.get_returns_for_timestamp(timestamp, optimized_weights.index.tolist())
                                 portfolio_return = (optimized_weights * current_returns).sum()
                                 
                                 # 计算资金费率成本并从组合收益率中扣除
@@ -698,12 +704,6 @@ class BacktestSimulator:
                             'error_message': '',
                             'optimization_details': optimization_info
                         })
-                        
-                        # 获取当前截面的收益率数据（用于记录每个品种的具体收益）
-                        current_returns = pd.Series(0.0, index=optimized_weights.index)
-                        if self.returns_data is not None:
-                            # 获取当前截面的收益率
-                            current_returns = self.get_returns_for_timestamp(timestamp, optimized_weights.index.tolist())
                         
                         # 收集结果数据到内存中
                         optimization_stage = optimization_info.get('successful_stage', 'unknown') if optimization_info else 'unknown'
@@ -768,10 +768,10 @@ class BacktestSimulator:
             
             # 统一更新进度条（只更新一次）
             if HAS_TQDM:
-                progress_bar.set_description(f"截面 {i+1}/{len(time_index)} {status}")
+                progress_bar.set_description(f"截面 {i+1}/{len(time_index)} {prev_timestamp} {status}")
                 progress_bar.update(1)
             else:
-                print(f"\r回测进度: {i+1}/{len(time_index)} {status}", end="")
+                print(f"\r回测进度: {i+1}/{len(time_index)} {prev_timestamp} {status}", end="")
         
         # 关闭进度条
         if HAS_TQDM:
@@ -1034,6 +1034,7 @@ def constrained_optimizer_backtest(max_periods: int = None):
         # weight_threshold=0.001,  # 过滤绝对值小于0.001的权重（进一步放宽阈值）
         weight_threshold=0.005,  # 过滤绝对值小于0.005的权重（进一步放宽阈值）
         enable_funding_rate_constraint=True # 启用资金费率约束
+        # enable_funding_rate_constraint=False # 不启用资金费率约束
     )
 
     logger.info("优化器创建完成")
