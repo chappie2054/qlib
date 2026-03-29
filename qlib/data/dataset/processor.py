@@ -368,7 +368,8 @@ class CSZFillna(Processor):
 
     def __call__(self, df):
         cols = get_group_columns(df, self.fields_group)
-        df[cols] = df[cols].groupby("datetime", group_keys=False).apply(lambda x: x.fillna(x.mean()))
+        mean_df = df[cols].groupby("datetime").transform("mean")
+        df[cols] = df[cols].fillna(mean_df)
         return df
 
 
