@@ -27,7 +27,8 @@ logger.setLevel(logging.INFO)
 
 
 # def load_funding_rates_data(funding_rates_path: str = r"D:\temp\带时间间隔的历史资金费率数据-修复编码-all_data.parquet") -> pd.DataFrame:
-def load_funding_rates_data(funding_rates_path: str = r'D:\temp\带时间间隔的历史资金费率数据-修复编码-all_data_2026-03-07.parquet') -> pd.DataFrame:
+# def load_funding_rates_data(funding_rates_path: str = r'D:\temp\带时间间隔的历史资金费率数据-修复编码-all_data_2026-03-07.parquet') -> pd.DataFrame:
+def load_funding_rates_data(funding_rates_path: str = r'D:\temp\带时间间隔的历史资金费率数据-修复编码-all_data-clickhouse-all.parquet') -> pd.DataFrame:
     """
     加载资金费率数据
     
@@ -240,7 +241,7 @@ class BacktestSimulator:
                 symbol_data = symbol_data.sort_index()
                 
                 # 计算close价格的当期收益率（当前到下一期的变化率）
-                symbol_returns = symbol_data['close'].pct_change().shift(-1)
+                symbol_returns = symbol_data['open'].pct_change().shift(-1)
                 symbol_returns.name = 'return'
                 
                 returns_list.append(symbol_returns)
@@ -629,8 +630,7 @@ class BacktestSimulator:
                     optimized_weights, optimization_info = self.optimizer(
                         factor_scores=factor_scores,
                         funding_rates=funding_rates,
-                        current_weights=self.current_weights,
-                        timestamp=prev_timestamp
+                        current_weights=self.current_weights
                     )
                     
                     # 恢复原有的换手率约束值
